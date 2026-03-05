@@ -1,7 +1,7 @@
 <template>
   <div class="card" id="battery-status">
     <div class="card-header">
-      <span class="icon">🔋</span> 电池状态
+      电池状态
     </div>
     <div class="card-body">
       <div class="battery-gauge">

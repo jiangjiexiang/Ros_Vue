@@ -1,7 +1,7 @@
 <template>
   <div class="card">
     <div class="card-header">
-      <span class="icon">🎮</span> 摇杆控制
+      摇杆控制
     </div>
     <div class="card-body joystick-container">
       <div class="joystick-canvas-wrapper">
@@ -10,12 +10,7 @@
           :width="canvasSize"
           :height="canvasSize"
           @mousedown="onStart"
-          @mousemove="onMove"
-          @mouseup="onEnd"
-          @mouseleave="onEnd"
           @touchstart.prevent="onTouchStart"
-          @touchmove.prevent="onTouchMove"
-          @touchend.prevent="onEnd"
         />
       </div>
 
@@ -97,12 +92,6 @@ function draw() {
   const handleX = cx + knobX.value * (baseRadius - knobRadius)
   const handleY = cy + knobY.value * (baseRadius - knobRadius)
 
-  // 手柄阴影
-  ctx.beginPath()
-  ctx.arc(handleX, handleY + 2, knobRadius, 0, Math.PI * 2)
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
-  ctx.fill()
-
   // 手柄主体
   const knobGrad = ctx.createRadialGradient(
     handleX - 5, handleY - 5, 2,
@@ -135,14 +124,19 @@ function draw() {
 // ---- 触摸/鼠标事件 ----
 function getCanvasPos(event) {
   const canvas = canvasRef.value
+  if (!canvas) return { dx: 0, dy: 0 }
   const rect = canvas.getBoundingClientRect()
   const cx = canvasSize / 2
   const cy = canvasSize / 2
   const scaleX = canvasSize / rect.width
   const scaleY = canvasSize / rect.height
 
-  const x = (event.clientX - rect.left) * scaleX
-  const y = (event.clientY - rect.top) * scaleY
+  // 兼容鼠标和触摸事件
+  const clientX = event.clientX || (event.touches ? event.touches[0].clientX : 0)
+  const clientY = event.clientY || (event.touches ? event.touches[0].clientY : 0)
+
+  const x = (clientX - rect.left) * scaleX
+  const y = (clientY - rect.top) * scaleY
 
   // 归一化到 -1 ~ 1
   let dx = (x - cx) / (baseRadius - knobRadius)
@@ -164,6 +158,10 @@ function onStart(event) {
   knobX.value = dx
   knobY.value = dy
   draw()
+  
+  // 注册全局监听，保证移出 Canvas 也能继续控制
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onEnd)
 }
 
 function onMove(event) {
@@ -176,23 +174,28 @@ function onMove(event) {
 
 function onEnd() {
   isDragging = false
+  window.removeEventListener('mousemove', onMove)
+  window.removeEventListener('mouseup', onEnd)
+  window.removeEventListener('touchmove', onTouchMove)
+  window.removeEventListener('touchend', onEnd)
   // 弹簧回中动画
   animateReturn()
 }
 
 function onTouchStart(event) {
-  const touch = event.touches[0]
   isDragging = true
-  const { dx, dy } = getCanvasPos(touch)
+  const { dx, dy } = getCanvasPos(event.touches[0])
   knobX.value = dx
   knobY.value = dy
   draw()
+  
+  window.addEventListener('touchmove', onTouchMove, { passive: false })
+  window.addEventListener('touchend', onEnd)
 }
 
 function onTouchMove(event) {
   if (!isDragging) return
-  const touch = event.touches[0]
-  const { dx, dy } = getCanvasPos(touch)
+  const { dx, dy } = getCanvasPos(event.touches[0])
   knobX.value = dx
   knobY.value = dy
   draw()

@@ -2,7 +2,7 @@
   <div class="console-layout">
     <!-- 顶部导航栏 -->
     <header class="console-header">
-      <h1><span class="emoji">🤖</span> 机器人中控台</h1>
+      <h1>机器人中控台</h1>
       <div class="status-indicator">
         <span class="status-dot" :class="connectionState"></span>
         <span>{{ statusText }}</span>
@@ -26,6 +26,7 @@
           :mapData="mapData"
           :scanData="scanData"
           :tfData="tfData"
+          :layers="mapLayers"
         />
       </section>
 
@@ -45,17 +46,39 @@
           :connected="isConnected"
         />
 
-        <div class="card" v-if="isConnected && topics.length > 0">
+        <TelemetryPanel
+          v-if="isConnected"
+          :odomData="odomData"
+        />
+
+        <div class="card" v-if="isConnected">
           <div class="card-header">
-            <span class="icon">📡</span> 可用话题
+            图层控制
           </div>
           <div class="card-body">
-            <ul class="topic-list">
-              <li class="topic-item" v-for="t in topics" :key="t.id">
-                <span class="dot"></span>
-                {{ t.topic }}
-              </li>
-            </ul>
+            <div class="layer-controls">
+              <div class="layer-item">
+                <span>显示地图</span>
+                <label class="switch">
+                  <input type="checkbox" v-model="mapLayers.map">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="layer-item">
+                <span>显示激光</span>
+                <label class="switch">
+                  <input type="checkbox" v-model="mapLayers.scan">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="layer-item">
+                <span>显示机器人</span>
+                <label class="switch">
+                  <input type="checkbox" v-model="mapLayers.robot">
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -70,6 +93,7 @@ import JoystickControl from './components/JoystickControl.vue'
 import BatteryStatus from './components/BatteryStatus.vue'
 import SlamMap from './components/SlamMap.vue'
 import ConnectionPanel from './components/ConnectionPanel.vue'
+import TelemetryPanel from './components/TelemetryPanel.vue'
 
 const foxglove = useFoxglove()
 
@@ -80,11 +104,20 @@ const batteryVoltage = ref(0)
 const mapData = ref(null)
 const scanData = ref(null)
 const tfData = ref(null)
+const odomData = ref(null)
+
+// ---- 图层控制 ----
+const mapLayers = ref({
+  map: true,
+  scan: true,
+  robot: true
+})
 let cmdVelChannelId = null
 let batterySubId = null
 let mapSubId = null
 let scanSubId = null
 let tfSubId = null
+let odomSubId = null
 
 // ---- 计算属性 ----
 const connectionState = computed(() => foxglove.connectionState.value)
@@ -116,6 +149,7 @@ function handleDisconnect() {
   mapData.value = null
   scanData.value = null
   tfData.value = null
+  odomData.value = null
   topics.value = []
 }
 
@@ -170,6 +204,13 @@ function onChannelsReady(event) {
   if (!tfSubId) {
     tfSubId = foxglove.subscribe('/tf', (data) => {
       tfData.value = data
+    })
+  }
+
+  // 6. 订阅 /odom
+  if (!odomSubId) {
+    odomSubId = foxglove.subscribe('/odom', (data) => {
+      odomData.value = data
     })
   }
 }

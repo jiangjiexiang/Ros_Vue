@@ -378,6 +378,57 @@ function handleCdrMessage(subId, channel, buffer, offset) {
                 })
             }
             callback({ transforms })
+        } else if (channel.schemaName === 'nav_msgs/msg/Odometry' || channel.schemaName === 'nav_msgs/Odometry') {
+            const stampSec = reader.readInt32()
+            const stampNsec = reader.readUint32()
+            const frameId = reader.readString()
+            const childFrameId = reader.readString()
+
+            // Pose position
+            const px = reader.readFloat64()
+            const py = reader.readFloat64()
+            const pz = reader.readFloat64()
+
+            // Pose orientation
+            const qx = reader.readFloat64()
+            const qy = reader.readFloat64()
+            const qz = reader.readFloat64()
+            const qw = reader.readFloat64()
+
+            // skip covariance 36 float64
+            reader.align(8)
+            reader.pos += 36 * 8
+
+            // Twist linear
+            const lx = reader.readFloat64()
+            const ly = reader.readFloat64()
+            const lz = reader.readFloat64()
+
+            // Twist angular
+            const ax = reader.readFloat64()
+            const ay = reader.readFloat64()
+            const az = reader.readFloat64()
+
+            // skip covariance 36 float64
+            reader.align(8)
+            reader.pos += 36 * 8
+
+            callback({
+                header: { stamp: { sec: stampSec, nsec: stampNsec }, frame_id: frameId },
+                child_frame_id: childFrameId,
+                pose: {
+                    pose: {
+                        position: { x: px, y: py, z: pz },
+                        orientation: { x: qx, y: qy, z: qz, w: qw }
+                    }
+                },
+                twist: {
+                    twist: {
+                        linear: { x: lx, y: ly, z: lz },
+                        angular: { x: ax, y: ay, z: az }
+                    }
+                }
+            })
         } else {
             console.warn(`[Foxglove] 暂不支持 CDR 解析类型: ${channel.schemaName}。`)
         }
