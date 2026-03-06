@@ -33,5 +33,14 @@ fi
 echo "按下 Ctrl+C 可停止运行。"
 echo "---------------------------------------------------"
 
+# 启动后台服务 (管理 ROS 2 launch)
+echo "正在启动后端服务 (端口 3000)..."
+node server.js &
+BACKEND_PID=$!
+
+# 处理退出信号，关闭后台程序
+trap "echo '正在停止中控台服务...'; kill $BACKEND_PID; exit" INT TERM EXIT
+
 # 启动开发服务器
+echo "正在启动前端界面..."
 npm run dev

@@ -729,19 +729,22 @@ input:checked+.slider:before {
     .right-panel {
         order: 3 !important;
         overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch;
+        /* 适配iOS顺滑滚动 */
         min-height: 0 !important;
-        /* 核心：防止 Grid 子元素内容撑开导致无法滚动 */
+        height: 100% !important;
+        /* 强制高度受控 */
+        max-height: 100% !important;
+        /* 强制高度受控 */
         padding-right: 4px;
-        /* 给滚动条留点呼吸空间 */
-        display: flex !important;
-        flex-direction: column !important;
-        gap: 8px !important;
+        display: block !important;
+        /* 使用传统 block 流布局，杜绝高度坍塌或溢出问题 */
         padding-bottom: 12px !important;
     }
 
     .right-panel>* {
-        flex-shrink: 0 !important;
-        /* 防止卡片被挤压变形，从而触发实际滚动 */
+        margin-bottom: 8px !important;
+        /* Block 布局下使用 margin 替代 gap */
     }
 
     .card-header {

@@ -51,6 +51,10 @@
           :odomData="odomData"
         />
 
+        <MappingControl 
+          :connected="isConnected" 
+        />
+
         <div class="card" v-if="isConnected">
           <div class="card-header">
             图层控制
@@ -94,6 +98,7 @@ import BatteryStatus from './components/BatteryStatus.vue'
 import SlamMap from './components/SlamMap.vue'
 import ConnectionPanel from './components/ConnectionPanel.vue'
 import TelemetryPanel from './components/TelemetryPanel.vue'
+import MappingControl from './components/MappingControl.vue'
 
 const foxglove = useFoxglove()
 

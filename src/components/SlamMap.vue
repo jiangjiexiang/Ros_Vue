@@ -260,61 +260,83 @@ watch(() => props.layers, () => {
   draw()
 }, { deep: true })
 
-// 处理 TF 数据：提取机器人位置和传感器偏移
+// ==================== TF 树管理 ====================
+// ROS 2 的 TF 树通常是: map -> odom -> base_link -> base_scan
+// /tf 话题分别发布各段变换，我们需要缓存并组合它们
+
+const tfTree = {}  // { 'parent|child': { translation, rotation } }
+
+function quatToYaw(q) {
+  return Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+}
+
+/** 组合两个 TF: parent->middle + middle->child = parent->child */
+function composeTf(tfA, tfB) {
+  // tfA: parent -> middle,  tfB: middle -> child
+  const yawA = quatToYaw(tfA.rotation)
+  const cosA = Math.cos(yawA)
+  const sinA = Math.sin(yawA)
+  return {
+    x: tfA.translation.x + (tfB.translation.x * cosA - tfB.translation.y * sinA),
+    y: tfA.translation.y + (tfB.translation.x * sinA + tfB.translation.y * cosA),
+    yaw: yawA + quatToYaw(tfB.rotation)
+  }
+}
+
+/** 从 TF 树中查找从 fromFrame 到 toFrame 的变换（最多 3 层链式查找） */
+function lookupTf(fromFrame, toFrame) {
+  // 直接路径
+  const directKey = `${fromFrame}|${toFrame}`
+  if (tfTree[directKey]) {
+    const tf = tfTree[directKey]
+    return { x: tf.translation.x, y: tf.translation.y, yaw: quatToYaw(tf.rotation) }
+  }
+  
+  // 两段路径: fromFrame -> middle -> toFrame
+  for (const key in tfTree) {
+    const [parent, child] = key.split('|')
+    if (parent === fromFrame) {
+      const secondKey = `${child}|${toFrame}`
+      if (tfTree[secondKey]) {
+        return composeTf(tfTree[key], tfTree[secondKey])
+      }
+    }
+  }
+  
+  return null
+}
+
+// 处理 TF 数据：缓存所有变换段，然后组合查询
 watch(() => props.tfData, (newData) => {
   if (!newData || !newData.transforms) return
   
-  // 1. 寻找机器人位置 (map -> base_link)
-  // 优先级: map -> base_link > map -> base_footprint > map -> odom
-  let robotTf = newData.transforms.find(tf => 
-    tf.header.frame_id === 'map' && tf.child_frame_id === 'base_link'
-  )
-  if (!robotTf) {
-    robotTf = newData.transforms.find(tf => 
-      tf.header.frame_id === 'map' && tf.child_frame_id === 'base_footprint'
-    )
+  // 1. 将所有收到的 TF 存入树
+  for (const tf of newData.transforms) {
+    const key = `${tf.header.frame_id}|${tf.child_frame_id}`
+    tfTree[key] = tf.transform
   }
-  if (!robotTf) {
-    robotTf = newData.transforms.find(tf => 
-      tf.header.frame_id === 'map' && tf.child_frame_id === 'odom'
-    )
-  }
-  // 最后的兜底：不限 frame_id 找 base_link
-  if (!robotTf) {
-    robotTf = newData.transforms.find(tf => 
-      tf.child_frame_id === 'base_link' || tf.child_frame_id === 'base_footprint'
-    )
+  
+  // 2. 查找机器人在地图坐标系中的位置 (map -> base_link)
+  //    支持链: map -> odom -> base_link 或 map -> odom -> base_footprint
+  let pose = lookupTf('map', 'base_link')
+  if (!pose) pose = lookupTf('map', 'base_footprint')
+  // 无地图时退回到 odom 坐标系
+  if (!pose) pose = lookupTf('odom', 'base_link')
+  if (!pose) pose = lookupTf('odom', 'base_footprint')
+  
+  if (pose) {
+    robotPose.value = pose
   }
 
-  if (robotTf) {
-    const trans = robotTf.transform.translation
-    const rot = robotTf.transform.rotation
-    robotPose.value = {
-      x: trans.x,
-      y: trans.y,
-      yaw: Math.atan2(2 * (rot.w * rot.z + rot.x * rot.y), 1 - 2 * (rot.y * rot.y + rot.z * rot.z))
-    }
-  }
-
-  // 2. 寻找传感器偏移 (base_link -> laser/base_scan)
+  // 3. 寻找传感器偏移 (base_link -> laser/base_scan)
   const scanFrame = props.scanData?.header?.frame_id || 'base_scan'
-  const sensorTf = newData.transforms.find(tf => 
-    (tf.header.frame_id === 'base_link' || tf.header.frame_id === 'base_footprint') && 
-    tf.child_frame_id === scanFrame
-  )
-  if (sensorTf) {
-    const trans = sensorTf.transform.translation
-    const rot = sensorTf.transform.rotation
-    sensorOffset.value = {
-      x: trans.x,
-      y: trans.y,
-      yaw: Math.atan2(2 * (rot.w * rot.z + rot.x * rot.y), 1 - 2 * (rot.y * rot.y + rot.z * rot.z))
-    }
+  let sOffset = lookupTf('base_link', scanFrame)
+  if (!sOffset) sOffset = lookupTf('base_footprint', scanFrame)
+  if (sOffset) {
+    sensorOffset.value = sOffset
   }
 
-  if (robotTf || sensorTf) {
-    draw()
-  }
+  draw()
 }, { deep: true })
 
 // 处理雷达数据：计算打击点坐标
