@@ -4,8 +4,11 @@
       <div class="header-left">
         SLAM 栅格地图
       </div>
-      <div class="header-right" v-if="hasMap">
-        <button class="btn-mini" @click="resetView">重置视图</button>
+      <div class="header-right">
+        <button v-if="isMapping" class="btn-mini btn-mini-save" @click="openSaveDialog" :disabled="isSaving">
+          {{ isSaving ? '保存中...' : '💾 保存地图' }}
+        </button>
+        <button v-if="hasMap" class="btn-mini" @click="resetView">重置视图</button>
       </div>
     </div>
     <div class="card-body">
@@ -32,7 +35,36 @@
         <p v-if="!connected">请先连接机器人</p>
         <p v-else>等待地图或雷达数据...</p>
       </div>
+
+      <!-- 保存状态提示 -->
+      <div v-if="saveMsg" class="save-toast" :class="saveSuccess ? 'save-toast-ok' : 'save-toast-err'">
+        {{ saveMsg }}
+      </div>
     </div>
+
+    <!-- 保存地图对话框 -->
+    <Teleport to="body">
+      <div v-if="showSaveDialog" class="modal-overlay" @click.self="showSaveDialog = false">
+        <div class="modal-box">
+          <h3 class="modal-title">💾 保存地图</h3>
+          <p class="modal-desc">请输入要保存的地图名称：</p>
+          <input
+            ref="mapNameInputRef"
+            v-model="mapNameInput"
+            class="modal-input"
+            type="text"
+            placeholder="例如: my_room_map"
+            @keydown.enter="confirmSave"
+            @keydown.esc="showSaveDialog = false"
+            maxlength="64"
+          />
+          <div class="modal-actions">
+            <button class="btn-modal-cancel" @click="showSaveDialog = false">取消</button>
+            <button class="btn-modal-confirm" @click="confirmSave" :disabled="!mapNameInput.trim()">确认保存</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -44,11 +76,56 @@ const props = defineProps({
   mapData: Object,
   scanData: Object,
   tfData: Object,
+  isMapping: {
+    type: Boolean,
+    default: false
+  },
   layers: {
     type: Object,
     default: () => ({ map: true, scan: true, robot: true })
   }
 })
+
+// === 保存地图 ===
+const showSaveDialog = ref(false)
+const mapNameInput = ref('')
+const mapNameInputRef = ref(null)
+const isSaving = ref(false)
+const saveMsg = ref('')
+const saveSuccess = ref(false)
+const API_BASE = `http://${window.location.hostname}:3000/api`
+
+async function openSaveDialog() {
+  mapNameInput.value = ''
+  saveMsg.value = ''
+  showSaveDialog.value = true
+  await nextTick()
+  mapNameInputRef.value?.focus()
+}
+
+async function confirmSave() {
+  const name = mapNameInput.value.trim()
+  if (!name) return
+  showSaveDialog.value = false
+  isSaving.value = true
+  saveMsg.value = ''
+  try {
+    const res = await fetch(`${API_BASE}/save_map`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mapName: name })
+    })
+    const data = await res.json()
+    saveSuccess.value = data.success
+    saveMsg.value = data.success ? `✅ 地图已保存: ${name}` : `❌ ${data.error}`
+  } catch (err) {
+    saveSuccess.value = false
+    saveMsg.value = '❌ 无法连接到本地控制服务'
+  } finally {
+    isSaving.value = false
+    setTimeout(() => { saveMsg.value = '' }, 5000)
+  }
+}
 
 const containerRef = ref(null)
 const mapCanvasRef = ref(null)
@@ -500,12 +577,20 @@ watch(() => props.mapData, (newData) => {
 onMounted(() => {
   if (props.mapData) updateOffscreenCanvas(props.mapData)
 })
+
+defineExpose({ resetView })
+
 </script>
 
 <style scoped>
 .header-left {
   display: flex;
   align-items: center;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .btn-mini {
   background: rgba(255, 255, 255, 0.1);
@@ -517,13 +602,26 @@ onMounted(() => {
   cursor: pointer;
   transition: all 0.2s;
 }
-.btn-mini:hover {
+.btn-mini:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.2);
+}
+.btn-mini:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-mini-save {
+  background: rgba(52, 211, 153, 0.15);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #34d399;
+}
+.btn-mini-save:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.3);
 }
 .map-card :deep(.card-body) {
   padding: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .map-canvas-container {
   width: 100%;
@@ -540,4 +638,77 @@ onMounted(() => {
 canvas {
   display: block;
 }
+
+/* 保存提示 */
+.save-toast {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 18px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
+  animation: fadein 0.2s ease;
+  white-space: nowrap;
+  z-index: 10;
+}
+.save-toast-ok  { background: rgba(16,185,129,0.85); color: #fff; }
+.save-toast-err { background: rgba(239,68,68,0.85);  color: #fff; }
+@keyframes fadein { from { opacity:0; transform:translateX(-50%) translateY(6px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+.modal-box {
+  background: #1e2130;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 14px;
+  padding: 28px 32px;
+  min-width: 340px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  animation: modal-in 0.18s ease;
+}
+@keyframes modal-in {
+  from { transform: scale(0.92); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+.modal-title { font-size: 1.1rem; font-weight: 700; color: #e2e8f0; margin: 0 0 8px; }
+.modal-desc  { font-size: 0.85rem; color: #9ca3af; margin: 0 0 14px; }
+.modal-input {
+  width: 100%; box-sizing: border-box;
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px; padding: 10px 12px;
+  color: #e2e8f0; font-size: 0.95rem; outline: none;
+  transition: border-color 0.2s;
+}
+.modal-input:focus { border-color: #6366f1; }
+.modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+.btn-modal-cancel {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #9ca3af; padding: 8px 18px;
+  border-radius: 8px; cursor: pointer; font-size: 0.9rem;
+  transition: all 0.2s;
+}
+.btn-modal-cancel:hover { background: rgba(255,255,255,0.15); }
+.btn-modal-confirm {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  border: none; color: #fff; padding: 8px 20px;
+  border-radius: 8px; cursor: pointer;
+  font-size: 0.9rem; font-weight: 600;
+  transition: all 0.2s;
+}
+.btn-modal-confirm:hover:not(:disabled) { background: linear-gradient(135deg, #6366f1, #818cf8); }
+.btn-modal-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

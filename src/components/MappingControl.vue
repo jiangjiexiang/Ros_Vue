@@ -42,6 +42,8 @@ const props = defineProps({
   connected: Boolean
 })
 
+const emit = defineEmits(['mappingStarted', 'update:isMapping'])
+
 const isMapping = ref(false)
 const isLoading = ref(false)
 const errorMsg = ref('')
@@ -54,6 +56,7 @@ async function checkStatus() {
     const res = await fetch(`${API_BASE}/mapping_status`)
     const data = await res.json()
     isMapping.value = data.isRunning
+    emit('update:isMapping', data.isRunning)
     errorMsg.value = ''
   } catch (err) {
     console.error('获取建图状态失败:', err)
@@ -68,6 +71,8 @@ async function startMapping() {
     const data = await res.json()
     if (data.success) {
       isMapping.value = true
+      emit('update:isMapping', true)
+      emit('mappingStarted')
     } else {
       errorMsg.value = data.error || '启动失败'
     }
@@ -86,6 +91,7 @@ async function stopMapping() {
     const data = await res.json()
     if (data.success) {
       isMapping.value = false
+      emit('update:isMapping', false)
     } else {
       errorMsg.value = data.error || '停止失败'
     }
@@ -98,7 +104,7 @@ async function stopMapping() {
 
 onMounted(() => {
   checkStatus()
-  statusTimer = setInterval(checkStatus, 3000) // 每3秒检查一次状态
+  statusTimer = setInterval(checkStatus, 3000)
 })
 
 onUnmounted(() => {

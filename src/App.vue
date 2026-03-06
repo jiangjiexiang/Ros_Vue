@@ -22,11 +22,13 @@
       <!-- 中栏: 地图 -->
       <section class="center-panel">
         <SlamMap
+          ref="slamMapRef"
           :connected="isConnected"
           :mapData="mapData"
           :scanData="scanData"
           :tfData="tfData"
           :layers="mapLayers"
+          :isMapping="mappingActive"
         />
       </section>
 
@@ -53,6 +55,8 @@
 
         <MappingControl 
           :connected="isConnected" 
+          v-model:isMapping="mappingActive"
+          @mappingStarted="onMappingStarted"
         />
 
         <div class="card" v-if="isConnected">
@@ -101,6 +105,10 @@ import TelemetryPanel from './components/TelemetryPanel.vue'
 import MappingControl from './components/MappingControl.vue'
 
 const foxglove = useFoxglove()
+const slamMapRef = ref(null)
+
+// ---- 建图状态 (跨组件共享) ----
+const mappingActive = ref(false)
 
 // ---- 状态 ----
 const topics = ref([])
@@ -142,6 +150,11 @@ const statusText = computed(() => {
 // ---- 事件处理 ----
 function handleConnect(url) {
   foxglove.connect(url)
+}
+
+function onMappingStarted() {
+  // 建图开始时自动重置地图视图
+  slamMapRef.value?.resetView()
 }
 
 function handleDisconnect() {

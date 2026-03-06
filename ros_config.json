@@ -1,0 +1,50 @@
+{
+    "tasks": {
+        "startup": [
+            {
+                "id": "foxglove",
+                "description": "Foxglove 数据桥接 (高带宽模式)",
+                "command": "ros2",
+                "args": [
+                    "run",
+                    "foxglove_bridge",
+                    "foxglove_bridge",
+                    "--ros-args",
+                    "-p",
+                    "send_buffer_limit:=100000000",
+                    "-p",
+                    "num_threads:=4",
+                    "-p",
+                    "max_qos_depth:=10",
+                    "-p",
+                    "min_qos_depth:=10"
+                ],
+                "delay": 0
+            }
+        ],
+        "mapping": [
+            {
+                "id": "mapCartographer",
+                "description": "Cartographer 建图算法",
+                "command": "ros2",
+                "args": [
+                    "launch",
+                    "fishbot_cartographer",
+                    "cartographer.launch.py"
+                ],
+                "delay": 0
+            }
+        ]
+    },
+    "save_map": {
+        "command": "ros2",
+        "args": [
+            "run",
+            "nav2_map_server",
+            "map_saver_cli",
+            "-f"
+        ],
+        "description": "保存地图（-f 后追加地图名和路径）",
+        "save_dir": "/home/jiang/workspace/fishbot/maps"
+    }
+}
