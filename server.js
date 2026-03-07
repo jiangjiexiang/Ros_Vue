@@ -127,6 +127,86 @@ app.post('/api/start_mapping', (req, res) => res.redirect(307, '/api/run_task/ma
 app.post('/api/stop_mapping', (req, res) => res.redirect(307, '/api/stop_task/mapping'));
 app.get('/api/mapping_status', (req, res) => res.redirect(301, '/api/task_status/mapping'));
 
+// 获取地图列表
+app.get('/api/list_maps', (req, res) => {
+    const config = loadConfig();
+    const mapsDir = config.maps_dir || config.save_map?.save_dir || '/tmp';
+    try {
+        if (!fs.existsSync(mapsDir)) {
+            return res.json({ maps: [] });
+        }
+        const files = fs.readdirSync(mapsDir)
+            .filter(f => f.endsWith('.yaml'))
+            .map(f => ({
+                name: f.replace('.yaml', ''),
+                path: path.join(mapsDir, f.replace('.yaml', ''))
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        res.json({ maps: files });
+    } catch (err) {
+        console.error('[list_maps] 读取地图目录失败:', err);
+        res.status(500).json({ maps: [], error: err.message });
+    }
+});
+
+// 启动导航 (支持指定地图路径)
+app.post('/api/start_navigation', (req, res) => {
+    const { mapPath } = req.body;
+    if (!mapPath || mapPath.trim() === '') {
+        return res.status(400).json({ success: false, error: '请指定地图路径 (mapPath)' });
+    }
+
+    const config = loadConfig();
+    const tasks = config.tasks['navigation'] || [];
+    if (tasks.length === 0) {
+        return res.status(404).json({ success: false, error: '未找到 navigation 任务配置' });
+    }
+
+    try {
+        tasks.forEach((task) => {
+            const { id, command, args, delay, description } = task;
+            // 追加地图参数
+            const navArgs = [...args, `map:=${mapPath}.yaml`];
+
+            setTimeout(() => {
+                if (!activeProcesses[id]) {
+                    console.log(`[${id}] 启动导航: ${description}, 地图: ${mapPath}`);
+                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
+                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${navArgs.join(' ')}`;
+
+                    const proc = spawn('bash', ['-c', fullCommand], {
+                        detached: true,
+                        stdio: 'inherit'
+                    });
+
+                    proc.on('error', (err) => {
+                        console.error(`[${id}] 启动错误:`, err.message);
+                        activeProcesses[id] = null;
+                    });
+
+                    proc.on('exit', (code) => {
+                        console.log(`[${id}] 已退出 (代码: ${code})`);
+                        activeProcesses[id] = null;
+                    });
+
+                    activeProcesses[id] = proc;
+                } else {
+                    console.log(`[${id}] 导航已在运行中，忽略重复启动`);
+                }
+            }, delay || 0);
+        });
+
+        res.json({ success: true, message: `导航已启动，地图: ${mapPath}` });
+    } catch (error) {
+        console.error('[start_navigation] 启动失败:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 停止导航 / 查询导航状态 (复用通用接口)
+app.post('/api/stop_navigation', (req, res) => res.redirect(307, '/api/stop_task/navigation'));
+app.get('/api/navigation_status', (req, res) => res.redirect(301, '/api/task_status/navigation'));
+
 // 保存地图接口
 app.post('/api/save_map', (req, res) => {
     const { mapName } = req.body;

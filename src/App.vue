@@ -27,8 +27,13 @@
           :mapData="mapData"
           :scanData="scanData"
           :tfData="tfData"
+          :planData="planData"
           :layers="mapLayers"
           :isMapping="mappingActive"
+          :isNavigating="navigationActive"
+          :isSettingPose="isSettingPose"
+          @goal-set="onGoalSet"
+          @initial-pose-set="onInitialPoseSet"
         />
       </section>
 
@@ -59,6 +64,12 @@
           @mappingStarted="onMappingStarted"
         />
 
+        <NavigationControl
+          :connected="isConnected"
+          v-model:isNavigating="navigationActive"
+          v-model:isSettingPose="isSettingPose"
+        />
+
         <div class="card" v-if="isConnected">
           <div class="card-header">
             图层控制
@@ -86,6 +97,20 @@
                   <span class="slider"></span>
                 </label>
               </div>
+              <div class="layer-item">
+                <span>显示路径</span>
+                <label class="switch">
+                  <input type="checkbox" v-model="mapLayers.path">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="layer-item">
+                <span>显示目标点</span>
+                <label class="switch">
+                  <input type="checkbox" v-model="mapLayers.goal">
+                  <span class="slider"></span>
+                </label>
+              </div>
             </div>
           </div>
         </div>
@@ -103,12 +128,17 @@ import SlamMap from './components/SlamMap.vue'
 import ConnectionPanel from './components/ConnectionPanel.vue'
 import TelemetryPanel from './components/TelemetryPanel.vue'
 import MappingControl from './components/MappingControl.vue'
+import NavigationControl from './components/NavigationControl.vue'
 
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
 
 // ---- 建图状态 (跨组件共享) ----
 const mappingActive = ref(false)
+
+// ---- 导航状态 ----
+const navigationActive = ref(false)
+const isSettingPose = ref(false)
 
 // ---- 状态 ----
 const topics = ref([])
@@ -118,19 +148,25 @@ const mapData = ref(null)
 const scanData = ref(null)
 const tfData = ref(null)
 const odomData = ref(null)
+const planData = ref(null)
 
 // ---- 图层控制 ----
 const mapLayers = ref({
   map: true,
   scan: true,
-  robot: true
+  robot: true,
+  path: true,
+  goal: true
 })
 let cmdVelChannelId = null
+let goalPoseChannelId = null
+let initialPoseChannelId = null
 let batterySubId = null
 let mapSubId = null
 let scanSubId = null
 let tfSubId = null
 let odomSubId = null
+let planSubId = null
 
 // ---- 计算属性 ----
 const connectionState = computed(() => foxglove.connectionState.value)
@@ -160,14 +196,18 @@ function onMappingStarted() {
 function handleDisconnect() {
   foxglove.disconnect()
   cmdVelChannelId = null
+  goalPoseChannelId = null
+  initialPoseChannelId = null
   batterySubId = null
   mapSubId = null
+  planSubId = null
   batteryPercentage.value = -1
   batteryVoltage.value = 0
   mapData.value = null
   scanData.value = null
   tfData.value = null
   odomData.value = null
+  planData.value = null
   topics.value = []
 }
 
@@ -231,6 +271,23 @@ function onChannelsReady(event) {
       odomData.value = data
     })
   }
+
+  // 7. 声明 /goal_pose 发布频道
+  if (!goalPoseChannelId) {
+    goalPoseChannelId = foxglove.clientAdvertise('/goal_pose', 'geometry_msgs/PoseStamped', 'json')
+  }
+
+  // 8. 订阅 /plan (导航路径)
+  if (!planSubId) {
+    planSubId = foxglove.subscribe('/plan', (data) => {
+      planData.value = data
+    })
+  }
+
+  // 9. 声明 /initialpose 发布频道
+  if (!initialPoseChannelId) {
+    initialPoseChannelId = foxglove.clientAdvertise('/initialpose', 'geometry_msgs/PoseWithCovarianceStamped', 'json')
+  }
 }
 
 // 监听频道就绪事件
@@ -245,5 +302,21 @@ function onVelocityChange({ linearX, angularZ }) {
   if (cmdVelChannelId && isConnected.value) {
     foxglove.sendTwist(cmdVelChannelId, linearX, angularZ)
   }
+}
+
+// ---- 导航目标点设定 ----
+function onGoalSet({ x, y }) {
+  if (goalPoseChannelId && isConnected.value) {
+    foxglove.sendGoalPose(goalPoseChannelId, x, y, 0)
+  }
+}
+
+// ---- 初始位置设定 ----
+function onInitialPoseSet({ x, y, yaw }) {
+  if (initialPoseChannelId && isConnected.value) {
+    foxglove.sendInitialPose(initialPoseChannelId, x, y, yaw)
+  }
+  // 自动退出初始位置模式
+  isSettingPose.value = false
 }
 </script>

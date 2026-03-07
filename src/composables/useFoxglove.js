@@ -429,6 +429,31 @@ function handleCdrMessage(subId, channel, buffer, offset) {
                     }
                 }
             })
+        } else if (channel.schemaName === 'nav_msgs/msg/Path' || channel.schemaName === 'nav_msgs/Path') {
+            // Header
+            reader.readInt32()  // stamp.sec
+            reader.readUint32() // stamp.nanosec
+            reader.readString() // frame_id
+            // Poses array
+            const numPoses = reader.readUint32()
+            const poses = []
+            for (let i = 0; i < numPoses; i++) {
+                // Header (stamp + frame_id)
+                reader.readInt32()
+                reader.readUint32()
+                reader.readString()
+                // Position
+                const px = reader.readFloat64()
+                const py = reader.readFloat64()
+                const pz = reader.readFloat64()
+                // Orientation
+                const qx = reader.readFloat64()
+                const qy = reader.readFloat64()
+                const qz = reader.readFloat64()
+                const qw = reader.readFloat64()
+                poses.push({ position: { x: px, y: py, z: pz }, orientation: { x: qx, y: qy, z: qz, w: qw } })
+            }
+            callback({ poses })
         } else {
             console.warn(`[Foxglove] 暂不支持 CDR 解析类型: ${channel.schemaName}。`)
         }
@@ -560,6 +585,36 @@ function publishMessage(channelId, data) {
 }
 
 /**
+ * 发送导航目标点到 /goal_pose
+ * geometry_msgs/PoseStamped 格式
+ *
+ * @param {number} channelId - /goal_pose 对应的客户端频道 ID
+ * @param {number} x - 目标点 x (米)
+ * @param {number} y - 目标点 y (米)
+ * @param {number} yaw - 目标方向 (弧度)，默认0
+ */
+function sendGoalPose(channelId, x, y, yaw = 0) {
+    const halfYaw = yaw / 2
+    const qz = Math.sin(halfYaw)
+    const qw = Math.cos(halfYaw)
+    const stamp = Date.now() / 1000
+    const sec = Math.floor(stamp)
+    const nanosec = Math.round((stamp - sec) * 1e9)
+    const msg = {
+        header: {
+            stamp: { sec, nanosec },
+            frame_id: 'map'
+        },
+        pose: {
+            position: { x, y, z: 0.0 },
+            orientation: { x: 0.0, y: 0.0, z: qz, w: qw }
+        }
+    }
+    publishMessage(channelId, msg)
+    console.log(`[Foxglove] 发送目标点: (${x.toFixed(3)}, ${y.toFixed(3)}), yaw=${yaw.toFixed(3)}`)
+}
+
+/**
  * 发送 Twist 消息到 /cmd_vel
  * geometry_msgs/Twist 格式:
  * {
@@ -577,6 +632,45 @@ function sendTwist(channelId, linearX, angularZ) {
         angular: { x: 0.0, y: 0.0, z: angularZ }
     }
     publishMessage(channelId, twist)
+}
+
+/**
+ * 发送初始位置估计到 /initialpose (AMCL 2D Pose Estimate)
+ * geometry_msgs/PoseWithCovarianceStamped 格式
+ *
+ * @param {number} channelId - /initialpose 对应的客户端频道 ID
+ * @param {number} x - 初始位置 x (米)
+ * @param {number} y - 初始位置 y (米)
+ * @param {number} yaw - 初始朝向 (弧度)
+ */
+function sendInitialPose(channelId, x, y, yaw = 0) {
+    const halfYaw = yaw / 2
+    const qz = Math.sin(halfYaw)
+    const qw = Math.cos(halfYaw)
+    const stamp = Date.now() / 1000
+    const sec = Math.floor(stamp)
+    const nanosec = Math.round((stamp - sec) * 1e9)
+    // 标准 AMCL 初始协方差矩阵 (6x6, 行优先)
+    const cov = [
+        0.25, 0, 0, 0, 0, 0,
+        0, 0.25, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0.0685
+    ]
+    const msg = {
+        header: { stamp: { sec, nanosec }, frame_id: 'map' },
+        pose: {
+            pose: {
+                position: { x, y, z: 0.0 },
+                orientation: { x: 0.0, y: 0.0, z: qz, w: qw }
+            },
+            covariance: cov
+        }
+    }
+    publishMessage(channelId, msg)
+    console.log(`[Foxglove] 初始位置: (${x.toFixed(3)}, ${y.toFixed(3)}), yaw=${yaw.toFixed(3)}`)
 }
 
 // ======================== 导出 ========================
@@ -598,6 +692,9 @@ export function useFoxglove() {
         clientAdvertise,
         publishMessage,
         sendTwist,
+        sendGoalPose,
+        sendInitialPose,
         findChannelByTopic
     }
 }
+

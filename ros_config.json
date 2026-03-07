@@ -34,6 +34,19 @@
                 ],
                 "delay": 0
             }
+        ],
+        "navigation": [
+            {
+                "id": "nav2",
+                "description": "Nav2 导航栈 (AMCL + 路径规划)",
+                "command": "ros2",
+                "args": [
+                    "launch",
+                    "fishbot_navigation2",
+                    "navigation2.launch.py"
+                ],
+                "delay": 0
+            }
         ]
     },
     "save_map": {
@@ -46,5 +59,6 @@
         ],
         "description": "保存地图（-f 后追加地图名和路径）",
         "save_dir": "/home/jiang/workspace/fishbot/maps"
-    }
+    },
+    "maps_dir": "/home/jiang/workspace/fishbot/maps"
 }

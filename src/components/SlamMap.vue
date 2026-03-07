@@ -24,6 +24,8 @@
         @touchstart.passive="onTouchStart"
         @touchmove.prevent="onTouchMove"
         @touchend="onMouseUp"
+        @dblclick="onDblClick"
+        :style="{ cursor: isSettingPose ? 'crosshair' : isNavigating ? 'crosshair' : (isDragging ? 'grabbing' : 'grab') }"
       >
         <canvas ref="mapCanvasRef" />
         <div class="map-info">
@@ -76,13 +78,22 @@ const props = defineProps({
   mapData: Object,
   scanData: Object,
   tfData: Object,
+  planData: Object,
   isMapping: {
+    type: Boolean,
+    default: false
+  },
+  isNavigating: {
+    type: Boolean,
+    default: false
+  },
+  isSettingPose: {
     type: Boolean,
     default: false
   },
   layers: {
     type: Object,
-    default: () => ({ map: true, scan: true, robot: true })
+    default: () => ({ map: true, scan: true, robot: true, path: true, goal: true })
   }
 })
 
@@ -94,6 +105,16 @@ const isSaving = ref(false)
 const saveMsg = ref('')
 const saveSuccess = ref(false)
 const API_BASE = `http://${window.location.hostname}:3000/api`
+
+// === 导航 ===
+const goalPoint = ref(null)  // { x, y } in world (map) coords
+const navPathPoints = ref([])  // Array of { x, y }
+
+// === 初始位置 ===
+const poseAnchor = ref(null)  // { x, y } 按下位置 (世界坐标)
+const poseDrag = ref(null)    // { x, y } 拖动尾端 (世界坐标)
+
+const emit = defineEmits(['goal-set', 'initial-pose-set'])
 
 async function openSaveDialog() {
   mapNameInput.value = ''
@@ -329,11 +350,109 @@ function draw() {
     ctx.restore()
   }
 
+  // 4. 画导航路径 (绿色折线)
+  if (props.layers.path !== false && navPathPoints.value.length > 1) {
+    ctx.strokeStyle = 'rgba(52, 211, 153, 0.8)'
+    ctx.lineWidth = 2 / scale.value
+    ctx.setLineDash([6 / scale.value, 3 / scale.value])
+    ctx.beginPath()
+    const first = worldToPixel(navPathPoints.value[0].x, navPathPoints.value[0].y)
+    ctx.moveTo(first.x, first.y)
+    for (let i = 1; i < navPathPoints.value.length; i++) {
+      const pt = worldToPixel(navPathPoints.value[i].x, navPathPoints.value[i].y)
+      ctx.lineTo(pt.x, pt.y)
+    }
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+
+  // 5. 画目标点 (紫色圆圈 + 十字)
+  if (props.layers.goal !== false && goalPoint.value) {
+    const gp = worldToPixel(goalPoint.value.x, goalPoint.value.y)
+    const r = 8 / scale.value
+    // 外圆
+    ctx.strokeStyle = '#a78bfa'
+    ctx.lineWidth = 2 / scale.value
+    ctx.beginPath()
+    ctx.arc(gp.x, gp.y, r, 0, Math.PI * 2)
+    ctx.stroke()
+    // 内圆实心
+    ctx.fillStyle = 'rgba(167, 139, 250, 0.4)'
+    ctx.beginPath()
+    ctx.arc(gp.x, gp.y, r * 0.5, 0, Math.PI * 2)
+    ctx.fill()
+    // 十字线
+    ctx.strokeStyle = '#a78bfa'
+    ctx.lineWidth = 1.5 / scale.value
+    const cross = 14 / scale.value
+    ctx.beginPath()
+    ctx.moveTo(gp.x - cross, gp.y)
+    ctx.lineTo(gp.x + cross, gp.y)
+    ctx.moveTo(gp.x, gp.y - cross)
+    ctx.lineTo(gp.x, gp.y + cross)
+    ctx.stroke()
+  }
+
+  // 6. 画初始位置箭头 (黄色)
+  if (poseAnchor.value) {
+    const ap = worldToPixel(poseAnchor.value.x, poseAnchor.value.y)
+    const r = 8 / scale.value
+    // 圆圈
+    ctx.strokeStyle = '#fbbf24'
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.3)'
+    ctx.lineWidth = 2 / scale.value
+    ctx.beginPath()
+    ctx.arc(ap.x, ap.y, r, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+    // 方向箭头
+    if (poseDrag.value) {
+      const dp = worldToPixel(poseDrag.value.x, poseDrag.value.y)
+      const dx = dp.x - ap.x
+      const dy = dp.y - ap.y
+      const len = Math.sqrt(dx * dx + dy * dy)
+      if (len > 2) {
+        const ux = dx / len
+        const uy = dy / len
+        const arrowLen = Math.max(len, 20 / scale.value)
+        const ex = ap.x + ux * arrowLen
+        const ey = ap.y + uy * arrowLen
+        // 主轴线
+        ctx.strokeStyle = '#fbbf24'
+        ctx.lineWidth = 2.5 / scale.value
+        ctx.beginPath()
+        ctx.moveTo(ap.x, ap.y)
+        ctx.lineTo(ex, ey)
+        ctx.stroke()
+        // 箭头头部
+        const hw = 6 / scale.value
+        const hl = 10 / scale.value
+        ctx.fillStyle = '#fbbf24'
+        ctx.beginPath()
+        ctx.moveTo(ex, ey)
+        ctx.lineTo(ex - ux * hl - uy * hw, ey - uy * hl + ux * hw)
+        ctx.lineTo(ex - ux * hl + uy * hw, ey - uy * hl - ux * hw)
+        ctx.closePath()
+        ctx.fill()
+      }
+    }
+  }
+
   ctx.restore()
 }
 
 // 监听图层配置变化
 watch(() => props.layers, () => {
+  draw()
+}, { deep: true })
+
+// 监听导航路径变化
+watch(() => props.planData, (newData) => {
+  if (!newData || !newData.poses) {
+    navPathPoints.value = []
+    return
+  }
+  navPathPoints.value = newData.poses.map(p => ({ x: p.position.x, y: p.position.y }))
   draw()
 }, { deep: true })
 
@@ -491,12 +610,38 @@ function onWheel(e) {
 }
 
 function onMouseDown(e) {
+  if (props.isSettingPose) {
+    // 初始位置模式: 记录按下点，禁止地图拖动
+    const rect = containerRef.value.getBoundingClientRect()
+    const cx = (e.clientX - rect.left - offsetX.value) / scale.value
+    const cy = (e.clientY - rect.top - offsetY.value) / scale.value
+    const info = getEffectiveMapInfo()
+    poseAnchor.value = {
+      x: info.origin.position.x + cx * info.resolution,
+      y: info.origin.position.y + (info.height - 1 - cy) * info.resolution
+    }
+    poseDrag.value = null
+    draw()
+    return
+  }
   isDragging = true
   lastMouseX = e.clientX
   lastMouseY = e.clientY
 }
 
 function onMouseMove(e) {
+  if (props.isSettingPose && poseAnchor.value) {
+    const rect = containerRef.value.getBoundingClientRect()
+    const cx = (e.clientX - rect.left - offsetX.value) / scale.value
+    const cy = (e.clientY - rect.top - offsetY.value) / scale.value
+    const info = getEffectiveMapInfo()
+    poseDrag.value = {
+      x: info.origin.position.x + cx * info.resolution,
+      y: info.origin.position.y + (info.height - 1 - cy) * info.resolution
+    }
+    draw()
+    return
+  }
   if (!isDragging) return
   const dx = e.clientX - lastMouseX
   const dy = e.clientY - lastMouseY
@@ -507,8 +652,41 @@ function onMouseMove(e) {
   draw()
 }
 
-function onMouseUp() {
+function onMouseUp(e) {
+  if (props.isSettingPose && poseAnchor.value) {
+    let yaw = 0
+    if (poseDrag.value) {
+      const dx = poseDrag.value.x - poseAnchor.value.x
+      const dy = poseDrag.value.y - poseAnchor.value.y
+      if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+        yaw = Math.atan2(dy, dx)
+      }
+    }
+    emit('initial-pose-set', { x: poseAnchor.value.x, y: poseAnchor.value.y, yaw })
+    // 清除预览
+    poseAnchor.value = null
+    poseDrag.value = null
+    draw()
+    return
+  }
   isDragging = false
+}
+
+// 双击设定导航目标点
+function onDblClick(e) {
+  if (!props.isNavigating) return
+  const rect = containerRef.value.getBoundingClientRect()
+  const canvasX = (e.clientX - rect.left - offsetX.value) / scale.value
+  const canvasY = (e.clientY - rect.top - offsetY.value) / scale.value
+  // 将 Canvas 像素坐标转换回世界坐标
+  const info = getEffectiveMapInfo()
+  const res = info.resolution
+  const origin = info.origin.position
+  const wx = origin.x + canvasX * res
+  const wy = origin.y + (info.height - 1 - canvasY) * res
+  goalPoint.value = { x: wx, y: wy }
+  emit('goal-set', { x: wx, y: wy })
+  draw()
 }
 
 // 触摸支持
@@ -578,7 +756,11 @@ onMounted(() => {
   if (props.mapData) updateOffscreenCanvas(props.mapData)
 })
 
-defineExpose({ resetView })
+defineExpose({
+  resetView,
+  clearGoal: () => { goalPoint.value = null; navPathPoints.value = []; draw() },
+  clearPose: () => { poseAnchor.value = null; poseDrag.value = null; draw() }
+})
 
 </script>
 
