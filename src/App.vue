@@ -31,7 +31,8 @@
           :layers="mapLayers"
           :isMapping="mappingActive"
           :isNavigating="navigationActive"
-          :isSettingPose="isSettingPose"
+          v-model:isSettingPose="isSettingPose"
+          :navFeedback="navFeedback"
           @goal-set="onGoalSet"
           @initial-pose-set="onInitialPoseSet"
         />
@@ -120,7 +121,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useFoxglove } from './composables/useFoxglove.js'
 import JoystickControl from './components/JoystickControl.vue'
 import BatteryStatus from './components/BatteryStatus.vue'
@@ -150,6 +151,9 @@ const tfData = ref(null)
 const odomData = ref(null)
 const planData = ref(null)
 
+// 导航反馈数据
+const navFeedback = ref(null)
+
 // ---- 图层控制 ----
 const mapLayers = ref({
   map: true,
@@ -158,15 +162,20 @@ const mapLayers = ref({
   path: true,
   goal: true
 })
+
+// ================= Foxglove 频道 ID ==================
 let cmdVelChannelId = null
 let goalPoseChannelId = null
 let initialPoseChannelId = null
+
+// 订阅 ID
 let batterySubId = null
 let mapSubId = null
 let scanSubId = null
 let tfSubId = null
 let odomSubId = null
 let planSubId = null
+let feedbackSubId = null // 导航反馈订阅 ID
 
 // ---- 计算属性 ----
 const connectionState = computed(() => foxglove.connectionState.value)
@@ -193,14 +202,8 @@ function onMappingStarted() {
   slamMapRef.value?.resetView()
 }
 
-function handleDisconnect() {
-  foxglove.disconnect()
-  cmdVelChannelId = null
-  goalPoseChannelId = null
-  initialPoseChannelId = null
-  batterySubId = null
-  mapSubId = null
-  planSubId = null
+// 清空所有订阅数据
+function clearAllData() {
   batteryPercentage.value = -1
   batteryVoltage.value = 0
   mapData.value = null
@@ -208,7 +211,23 @@ function handleDisconnect() {
   tfData.value = null
   odomData.value = null
   planData.value = null
+  navFeedback.value = null // 清除导航反馈数据
   topics.value = []
+}
+
+function handleDisconnect() {
+  foxglove.disconnect()
+  cmdVelChannelId = null
+  goalPoseChannelId = null
+  initialPoseChannelId = null
+  batterySubId = null
+  mapSubId = null
+  scanSubId = null
+  tfSubId = null
+  odomSubId = null
+  planSubId = null
+  feedbackSubId = null // 清除订阅 ID
+  clearAllData()
 }
 
 /**
@@ -288,13 +307,22 @@ function onChannelsReady(event) {
   if (!initialPoseChannelId) {
     initialPoseChannelId = foxglove.clientAdvertise('/initialpose', 'geometry_msgs/PoseWithCovarianceStamped', 'json')
   }
+
+  // 10. 订阅导航反馈 (距离与预计时间)
+  if (!feedbackSubId) {
+    feedbackSubId = foxglove.subscribe('/navigate_to_pose/_action/feedback', (data) => {
+      navFeedback.value = data
+    })
+  }
 }
 
 // 监听频道就绪事件
 window.addEventListener('foxglove:channels', onChannelsReady)
+window.addEventListener('foxglove:channels_update', onChannelsReady)
 onUnmounted(() => {
   window.removeEventListener('foxglove:channels', onChannelsReady)
-  foxglove.disconnect()
+  window.removeEventListener('foxglove:channels_update', onChannelsReady)
+  handleDisconnect()
 })
 
 // ---- 摇杆速度变化 → 发送 Twist ----
@@ -319,4 +347,79 @@ function onInitialPoseSet({ x, y, yaw }) {
   // 自动退出初始位置模式
   isSettingPose.value = false
 }
+
+// ======================== WASD 键盘控制 ========================
+const keyboardState = {
+  w: false,
+  a: false,
+  s: false,
+  d: false
+}
+let keyboardInterval = null
+
+// 线速度上限与角速度上限 (可根据情况修改)
+const MAX_LINEAR_VEL = 0.5
+const MAX_ANGULAR_VEL = 1.0
+
+function updateKeyboardControl() {
+  if (!cmdVelChannelId || !isConnected.value) return
+
+  let linearX = 0
+  let angularZ = 0
+
+  if (keyboardState.w) linearX += MAX_LINEAR_VEL
+  if (keyboardState.s) linearX -= MAX_LINEAR_VEL
+  if (keyboardState.a) angularZ += MAX_ANGULAR_VEL
+  if (keyboardState.d) angularZ -= MAX_ANGULAR_VEL
+
+  foxglove.sendTwist(cmdVelChannelId, linearX, angularZ)
+}
+
+function handleKeyDown(e) {
+  // 防止在输入框内打字时触发移动
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+
+  const key = e.key.toLowerCase()
+  if (['w', 'a', 's', 'd'].includes(key)) {
+    if (!keyboardState[key]) {
+      keyboardState[key] = true
+      
+      // 按第一下键时，开启 20Hz 的控制循环
+      if (!keyboardInterval) {
+        updateKeyboardControl() // 立即发一次
+        keyboardInterval = setInterval(updateKeyboardControl, 50)
+      }
+    }
+  }
+}
+
+function handleKeyUp(e) {
+  const key = e.key.toLowerCase()
+  if (['w', 'a', 's', 'd'].includes(key)) {
+    keyboardState[key] = false
+    
+    // 如果所有键都松开了，停止循环并发送一次 0 速度
+    if (!keyboardState.w && !keyboardState.a && !keyboardState.s && !keyboardState.d) {
+      if (keyboardInterval) {
+        clearInterval(keyboardInterval)
+        keyboardInterval = null
+      }
+      if (cmdVelChannelId && isConnected.value) {
+        foxglove.sendTwist(cmdVelChannelId, 0, 0)
+      }
+    }
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('keyup', handleKeyUp)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('keyup', handleKeyUp)
+  if (keyboardInterval) clearInterval(keyboardInterval)
+})
+
 </script>

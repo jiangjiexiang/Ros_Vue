@@ -202,6 +202,12 @@ class CdrReader {
         this.pos += padding
     }
 
+    readUint8() {
+        const v = this.view.getUint8(this.pos)
+        this.pos += 1
+        return v
+    }
+
     readUint16() {
         this.align(2)
         const v = this.view.getUint16(this.pos, true)
@@ -454,11 +460,54 @@ function handleCdrMessage(subId, channel, buffer, offset) {
                 poses.push({ position: { x: px, y: py, z: pz }, orientation: { x: qx, y: qy, z: qz, w: qw } })
             }
             callback({ poses })
+        } else if (channel.schemaName === 'nav2_msgs/action/NavigateToPose_FeedbackMessage' || channel.schemaName === 'nav2_msgs/NavigateToPose_FeedbackMessage') {
+            console.log('[Foxglove] 开始解析 NavigateToPose_FeedbackMessage...')
+            // goal_id (uuid, 16 bytes, uint8[16])
+            for (let i = 0; i < 16; i++) reader.readUint8()
+
+            // feedback (NavigateToPose_Feedback)
+            // current_pose (geometry_msgs/PoseStamped)
+            // -- header
+            reader.readInt32() // stamp.sec
+            reader.readUint32() // stamp.nanosec
+            reader.readString() // frame_id
+            // -- pose
+            reader.readFloat64() // x
+            reader.readFloat64() // y
+            reader.readFloat64() // z
+            reader.readFloat64() // rx
+            reader.readFloat64() // ry
+            reader.readFloat64() // rz
+            reader.readFloat64() // rw
+
+            // navigation_time (builtin_interfaces/Duration)
+            reader.readInt32() // sec
+            reader.readUint32() // nanosec
+
+            // estimated_time_remaining (builtin_interfaces/Duration)
+            const etaSec = reader.readInt32()
+            const etaNsec = reader.readUint32()
+
+            // number_of_recoveries (int16)
+            reader.readInt16()
+
+            // 为了 alignment 补充对齐 (int16占用2字节，下一个是float32需要4字节对齐，所以跳过2字节)
+            reader.align(4)
+
+            // distance_remaining (float32)
+            const distance = reader.readFloat32()
+
+            console.log(`[Foxglove] Nav Feedback 解析成功, 距离: ${distance.toFixed(2)}m, ETA: ${etaSec}s`)
+
+            callback({
+                estimated_time_remaining: { sec: etaSec, nanosec: etaNsec },
+                distance_remaining: distance
+            })
         } else {
-            console.warn(`[Foxglove] 暂不支持 CDR 解析类型: ${channel.schemaName}。`)
+            console.warn(`[Foxglove] 收到未知类型的 CDR 消息: ${channel.schemaName}`)
         }
-    } catch (err) {
-        console.error('[Foxglove] CDR 解析失败:', err)
+    } catch (e) {
+        console.error(`[Foxglove] 解析 CDR 失败 (${channel.schemaName}):`, e)
     }
 }
 

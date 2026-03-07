@@ -40,7 +40,7 @@
 
       <!-- 错误信息 -->
       <div class="error-message" v-if="errorMessage">
-        ⚠️ {{ errorMessage }}
+        {{ errorMessage }}
       </div>
     </div>
   </div>
@@ -57,7 +57,7 @@ const props = defineProps({
 
 const emit = defineEmits(['connect', 'disconnect'])
 
-const url = ref('ws://192.168.1.110:8765')
+const url = ref('ws://localhost:8765')
 
 const isConnected = computed(() => props.connectionState === 'connected')
 

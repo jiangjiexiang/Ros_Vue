@@ -15,7 +15,7 @@
         </span>
       </div>
       <div class="battery-voltage" v-if="connected && voltage > 0">
-        ⚡ {{ voltage }} V
+        {{ voltage }} V
       </div>
       <div class="battery-voltage" v-else>
         等待电池数据...

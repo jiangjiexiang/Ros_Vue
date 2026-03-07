@@ -11,7 +11,7 @@
           @click="startMapping"
           :disabled="isLoading"
         >
-          {{ isLoading ? '正在启动...' : '▶ 开始建图' }}
+          {{ isLoading ? '正在启动...' : '开始建图' }}
         </button>
         <button 
           v-else
@@ -19,7 +19,7 @@
           @click="stopMapping"
           :disabled="isLoading"
         >
-          {{ isLoading ? '正在停止...' : '⏹ 停止建图' }}
+          {{ isLoading ? '正在停止...' : '停止建图' }}
         </button>
       </div>
       
@@ -29,7 +29,7 @@
       </div>
       
       <div v-if="errorMsg" class="error-message mt-2">
-        ⚠️ {{ errorMsg }}
+        {{ errorMsg }}
       </div>
     </div>
   </div>

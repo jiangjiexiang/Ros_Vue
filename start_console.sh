@@ -10,6 +10,10 @@ WORKSPACE_DIR="$SCRIPT_DIR"
 echo "---------------------------------------------------"
 echo "正在启动机器人中控台..."
 echo "工作目录: $WORKSPACE_DIR"
+echo "正在清理先前可能残留的后台进程 (Gazebo, ROS 2, RViz2)..."
+pkill -9 -u "$(whoami)" -f "gzserver|gzclient|gazebo|rviz2|ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2" > /dev/null 2>&1
+ros2 daemon stop > /dev/null 2>&1
+sleep 1
 echo "---------------------------------------------------"
 
 # 1. 检查并加载 Node.js 环境 (适配 WSL/NVM)
@@ -107,7 +111,8 @@ if [ -f "server.js" ]; then
         
         # 强制清理可能的残留 ROS 2 进程 (安全起见)
         # 仅针对由当前用户启动的相关进程，排除 Gazebo (用户手动管理)
-        pkill -u "$(whoami)" -f "ros2|cartographer|foxglove" > /dev/null 2>&1
+        pkill -9 -u "$(whoami)" -f "ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2" > /dev/null 2>&1
+        ros2 daemon stop > /dev/null 2>&1
         
         # 杀掉后端进程
         if [ -n "$BACKEND_PID" ]; then

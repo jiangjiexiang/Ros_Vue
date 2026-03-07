@@ -1,7 +1,7 @@
 <template>
   <div class="card" v-if="connected">
     <div class="card-header">
-      🧭 导航控制
+      导航控制
     </div>
     <div class="card-body">
       <!-- 地图选择 -->
@@ -35,7 +35,7 @@
           @click="startNavigation"
           :disabled="isLoading || !selectedMap"
         >
-          {{ isLoading ? '正在启动...' : '▶ 开始导航' }}
+          {{ isLoading ? '正在启动...' : '开始导航' }}
         </button>
         <button
           v-else
@@ -43,7 +43,7 @@
           @click="stopNavigation"
           :disabled="isLoading"
         >
-          {{ isLoading ? '正在停止...' : '⏹ 停止导航' }}
+          {{ isLoading ? '正在停止...' : '停止导航' }}
         </button>
       </div>
 
@@ -60,13 +60,13 @@
           :class="isSettingPose ? 'btn-pose-active' : 'btn-pose'"
           @click="togglePoseMode"
         >
-          {{ isSettingPose ? '✅ 正在设置... (按住拖动)' : '📍 设置初始位置' }}
+          {{ isSettingPose ? '正在设置... (按住拖动)' : '设置初始位置' }}
         </button>
       </div>
 
       <!-- 操作提示 -->
       <div v-if="isNavigating && !isSettingPose" class="nav-hint goal-hint" style="margin-top:4px">
-        💡 双击地图设定导航目标点
+        双击地图设定导航目标点
       </div>
       <div v-if="isSettingPose" class="nav-hint pose-hint">
         🟡 按住地图拖动以设定位置和朝向
@@ -74,7 +74,7 @@
 
       <!-- 错误信息 -->
       <div v-if="errorMsg" class="error-message mt-2">
-        ⚠️ {{ errorMsg }}
+        {{ errorMsg }}
       </div>
     </div>
   </div>

@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -94,14 +94,30 @@ app.post('/api/stop_task/:taskName', (req, res) => {
             const proc = activeProcesses[id];
             if (proc && proc.pid) {
                 try {
-                    process.kill(-proc.pid);
-                    console.log(`[${id}] 已停止`);
+                    // 尝试平滑退出
+                    process.kill(-proc.pid, 'SIGTERM');
+                    console.log(`[${id}] 已发送停止信号`);
                 } catch (e) {
                     if (!e.message.includes('ESRCH')) {
                         console.error(`无法停止 ${id}:`, e.message);
                     }
                 }
                 activeProcesses[id] = null;
+
+                // 针对特定 ROS 2 launch 任务进行强力清场，防止孤儿节点卡住端口
+                if (id === 'nav2' || taskName === 'navigation') {
+                    setTimeout(() => {
+                        exec('pkill -9 -f "navigation2|nav2|component_container_isolated|amcl|bt_navigator"');
+                    }, 500);
+                } else if (id === 'mapCartographer' || taskName === 'mapping') {
+                    setTimeout(() => {
+                        exec('pkill -9 -f "cartographer.launch.py|cartographer_node|cartographer_occupancy_grid"');
+                    }, 500);
+                } else if (id === 'foxglove' || taskName === 'startup') {
+                    setTimeout(() => {
+                        exec('pkill -9 -f "foxglove_bridge"');
+                    }, 500);
+                }
             }
         });
 

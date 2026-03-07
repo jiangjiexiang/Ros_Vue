@@ -5,8 +5,16 @@
         SLAM 栅格地图
       </div>
       <div class="header-right">
+        <!-- 导航特有控件 -->
+        <template v-if="isNavigating">
+          <span class="nav-status-mini">导航中</span>
+          <button class="btn-mini btn-mini-pose" :class="{ 'active': isSettingPose }" @click="togglePoseMode">
+            设置初始位置
+          </button>
+        </template>
+
         <button v-if="isMapping" class="btn-mini btn-mini-save" @click="openSaveDialog" :disabled="isSaving">
-          {{ isSaving ? '保存中...' : '💾 保存地图' }}
+          {{ isSaving ? '保存中...' : '保存地图' }}
         </button>
         <button v-if="hasMap" class="btn-mini" @click="resetView">重置视图</button>
       </div>
@@ -32,6 +40,26 @@
           <span v-if="mapInfo">{{ mapInfo.width }} × {{ mapInfo.height }} | 缩放: {{ (scale * 100).toFixed(0) }}%</span>
           <span v-else>无地图模式 | 缩放: {{ (scale * 100).toFixed(0) }}%</span>
         </div>
+        
+        <!-- 悬浮操作提示 -->
+        <div v-if="isNavigating && !isSettingPose" class="map-overlay-hint hint-goal">
+          双击地图设定导航目标点
+        </div>
+        <div v-if="isSettingPose" class="map-overlay-hint hint-pose">
+          按住地图拖动以设定初始位置和朝向
+        </div>
+
+        <!-- 导航实时反馈面板 -->
+        <div v-if="isNavigating && navFeedback" class="map-overlay-feedback">
+          <div class="feedback-item">
+            <span class="fb-label">剩余距离</span>
+            <span class="fb-value">{{ navFeedback.distance_remaining.toFixed(2) }} m</span>
+          </div>
+          <div class="feedback-item">
+            <span class="fb-label">预计时间</span>
+            <span class="fb-value">{{ formattedETA }}</span>
+          </div>
+        </div>
       </div>
       <div v-else class="map-placeholder">
         <p v-if="!connected">请先连接机器人</p>
@@ -42,13 +70,18 @@
       <div v-if="saveMsg" class="save-toast" :class="saveSuccess ? 'save-toast-ok' : 'save-toast-err'">
         {{ saveMsg }}
       </div>
+      
+      <!-- 初始位置设置成功提示 -->
+      <div v-if="settingMsg" class="save-toast save-toast-ok">
+        {{ settingMsg }}
+      </div>
     </div>
 
     <!-- 保存地图对话框 -->
     <Teleport to="body">
       <div v-if="showSaveDialog" class="modal-overlay" @click.self="showSaveDialog = false">
         <div class="modal-box">
-          <h3 class="modal-title">💾 保存地图</h3>
+          <h3 class="modal-title">保存地图</h3>
           <p class="modal-desc">请输入要保存的地图名称：</p>
           <input
             ref="mapNameInputRef"
@@ -79,18 +112,10 @@ const props = defineProps({
   scanData: Object,
   tfData: Object,
   planData: Object,
-  isMapping: {
-    type: Boolean,
-    default: false
-  },
-  isNavigating: {
-    type: Boolean,
-    default: false
-  },
-  isSettingPose: {
-    type: Boolean,
-    default: false
-  },
+  isMapping: Boolean,
+  isNavigating: Boolean,
+  isSettingPose: Boolean,
+  navFeedback: Object,
   layers: {
     type: Object,
     default: () => ({ map: true, scan: true, robot: true, path: true, goal: true })
@@ -113,8 +138,22 @@ const navPathPoints = ref([])  // Array of { x, y }
 // === 初始位置 ===
 const poseAnchor = ref(null)  // { x, y } 按下位置 (世界坐标)
 const poseDrag = ref(null)    // { x, y } 拖动尾端 (世界坐标)
+const settingMsg = ref('')
 
-const emit = defineEmits(['goal-set', 'initial-pose-set'])
+const emit = defineEmits(['goal-set', 'initial-pose-set', 'update:isSettingPose'])
+
+// === 导航反馈计算 ===
+const formattedETA = computed(() => {
+  if (!props.navFeedback || !props.navFeedback.estimated_time_remaining) return '-- s'
+  const time = props.navFeedback.estimated_time_remaining
+  const totalSeconds = time.sec + time.nanosec / 1e9
+  if (totalSeconds < 0 || totalSeconds > 3600) return '-- s' // 过滤异常值
+  return totalSeconds.toFixed(1) + ' s'
+})
+
+function togglePoseMode() {
+  emit('update:isSettingPose', !props.isSettingPose)
+}
 
 async function openSaveDialog() {
   mapNameInput.value = ''
@@ -138,10 +177,10 @@ async function confirmSave() {
     })
     const data = await res.json()
     saveSuccess.value = data.success
-    saveMsg.value = data.success ? `✅ 地图已保存: ${name}` : `❌ ${data.error}`
+    saveMsg.value = data.success ? `地图已保存: ${name}` : `${data.error}`
   } catch (err) {
     saveSuccess.value = false
-    saveMsg.value = '❌ 无法连接到本地控制服务'
+    saveMsg.value = '无法连接到本地控制服务'
   } finally {
     isSaving.value = false
     setTimeout(() => { saveMsg.value = '' }, 5000)
@@ -245,12 +284,13 @@ function updateOffscreenCanvas(occupancyGrid) {
   if (scale.value === 1.0 && offsetX.value === 0) {
     autoFit()
   } else {
-    draw()
+    requestDraw()
   }
 }
 
 /**
  * 转换世界坐标 (米) 到地图图像像素坐标
+
  */
 function worldToPixel(wx, wy) {
   const info = getEffectiveMapInfo()
@@ -277,6 +317,17 @@ function worldToPixel(wx, wy) {
   return {
     x: dx / res,
     y: (info.height - 1) - (dy / res)
+  }
+}
+
+let isDrawPending = false
+function requestDraw() {
+  if (!isDrawPending) {
+    isDrawPending = true
+    requestAnimationFrame(() => {
+      draw()
+      isDrawPending = false
+    })
   }
 }
 
@@ -443,7 +494,7 @@ function draw() {
 
 // 监听图层配置变化
 watch(() => props.layers, () => {
-  draw()
+  requestDraw()
 }, { deep: true })
 
 // 监听导航路径变化
@@ -453,7 +504,7 @@ watch(() => props.planData, (newData) => {
     return
   }
   navPathPoints.value = newData.poses.map(p => ({ x: p.position.x, y: p.position.y }))
-  draw()
+  requestDraw()
 }, { deep: true })
 
 // ==================== TF 树管理 ====================
@@ -532,7 +583,7 @@ watch(() => props.tfData, (newData) => {
     sensorOffset.value = sOffset
   }
 
-  draw()
+  requestDraw()
 }, { deep: true })
 
 // 处理雷达数据：计算打击点坐标
@@ -564,7 +615,7 @@ watch(() => props.scanData, (newData) => {
     })
   }
   laserPoints.value = points
-  draw()
+  requestDraw()
 }, { deep: true })
 
 function autoFit() {
@@ -582,7 +633,7 @@ function autoFit() {
   scale.value = s
   offsetX.value = (cw - mw * s) / 2
   offsetY.value = (ch - mh * s) / 2
-  draw()
+  requestDraw()
 }
 
 function resetView() {
@@ -606,7 +657,7 @@ function onWheel(e) {
   offsetY.value = mouseY - (mouseY - offsetY.value) * (newScale / oldScale)
   
   scale.value = newScale
-  draw()
+  requestDraw()
 }
 
 function onMouseDown(e) {
@@ -621,7 +672,7 @@ function onMouseDown(e) {
       y: info.origin.position.y + (info.height - 1 - cy) * info.resolution
     }
     poseDrag.value = null
-    draw()
+    requestDraw()
     return
   }
   isDragging = true
@@ -663,6 +714,12 @@ function onMouseUp(e) {
       }
     }
     emit('initial-pose-set', { x: poseAnchor.value.x, y: poseAnchor.value.y, yaw })
+    emit('update:isSettingPose', false) // 自动退出设置模式
+    
+    // 显示成功提示
+    settingMsg.value = '初始位置设置成功'
+    setTimeout(() => { settingMsg.value = '' }, 3000)
+
     // 清除预览
     poseAnchor.value = null
     poseDrag.value = null
@@ -799,6 +856,29 @@ defineExpose({
 .btn-mini-save:hover:not(:disabled) {
   background: rgba(52, 211, 153, 0.3);
 }
+.btn-mini-pose {
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+}
+.btn-mini-pose:hover {
+  background: rgba(251, 191, 36, 0.3);
+}
+.btn-mini-pose.active {
+  background: rgba(251, 191, 36, 0.3);
+  border-color: #fbbf24;
+  animation: pose-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pose-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0); }
+}
+.nav-status-mini {
+  color: #34d399;
+  font-size: 11px;
+  font-weight: bold;
+  margin-right: 4px;
+}
 .map-card :deep(.card-body) {
   padding: 0;
   display: flex;
@@ -819,6 +899,46 @@ defineExpose({
 }
 canvas {
   display: block;
+}
+
+.map-info {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.map-overlay-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  pointer-events: none;
+  animation: fadein-down 0.3s ease;
+  backdrop-filter: blur(4px);
+}
+.hint-goal {
+  color: #a78bfa;
+  background: rgba(99, 102, 241, 0.25);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+}
+.hint-pose {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.25);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+}
+@keyframes fadein-down {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
 /* 保存提示 */

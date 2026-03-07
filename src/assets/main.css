@@ -135,6 +135,8 @@ body::before {
     box-shadow: var(--shadow-card);
     transition: var(--transition);
     overflow: hidden;
+    flex-shrink: 0;
+    /* 防止高度不足时组件被压缩 */
 }
 
 .card:hover {
@@ -302,6 +304,27 @@ body::before {
     flex-direction: column;
     gap: 16px;
     min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+    /* Prevents scrollbar from overlapping content */
+}
+
+/* 隐藏右侧面板默认滚动条，悬浮时可自定义或让默认生效，这里保留原生即可，我们稍微美化一下 */
+.right-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+.right-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.right-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+}
+
+.right-panel::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
 }
 
 /* ---- 连接控制 ---- */

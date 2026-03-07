@@ -11,6 +11,8 @@
                     "foxglove_bridge",
                     "--ros-args",
                     "-p",
+                    "include_hidden:=true",
+                    "-p",
                     "send_buffer_limit:=100000000",
                     "-p",
                     "num_threads:=4",
