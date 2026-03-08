@@ -32,8 +32,13 @@
           :isMapping="mappingActive"
           :isNavigating="navigationActive"
           v-model:isSettingPose="isSettingPose"
+          :multiPointMode="multiPointMode"
+          :waypoints="waypointQueue"
+          :activeWaypoint="activeWaypoint"
           :navFeedback="navFeedback"
           @goal-set="onGoalSet"
+          @waypoint-add="onWaypointAdd"
+          @waypoint-reached="onWaypointReached"
           @initial-pose-set="onInitialPoseSet"
         />
       </section>
@@ -42,7 +47,6 @@
       <section class="right-panel">
         <ConnectionPanel
           :connectionState="connectionState"
-          :serverName="serverName"
           :errorMessage="errorMessage"
           @connect="handleConnect"
           @disconnect="handleDisconnect"
@@ -69,6 +73,9 @@
           :connected="isConnected"
           v-model:isNavigating="navigationActive"
           v-model:isSettingPose="isSettingPose"
+          v-model:multiPointMode="multiPointMode"
+          :waypointCount="waypointQueue.length + (activeWaypoint ? 1 : 0)"
+          @clear-waypoints="clearWaypoints"
         />
 
         <div class="card" v-if="isConnected">
@@ -121,7 +128,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useFoxglove } from './composables/useFoxglove.js'
 import JoystickControl from './components/JoystickControl.vue'
 import BatteryStatus from './components/BatteryStatus.vue'
@@ -133,6 +140,22 @@ import NavigationControl from './components/NavigationControl.vue'
 
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
+const API_BASE = `http://${window.location.hostname}:3000/api`
+const DEFAULT_WS_URL = `ws://${window.location.hostname}:8765`
+
+const TOPIC_DEFAULTS = {
+  cmd_vel: '/cmd_vel',
+  battery: '/battery',
+  map: '/map',
+  scan: '/scan',
+  tf: '/tf',
+  odom: '/odom',
+  plan: '/plan',
+  goal_pose: '/goal_pose',
+  initial_pose: '/initialpose',
+  navigate_feedback: '/navigate_to_pose/_action/feedback',
+  imu: '/imu'
+}
 
 // ---- 建图状态 (跨组件共享) ----
 const mappingActive = ref(false)
@@ -140,6 +163,11 @@ const mappingActive = ref(false)
 // ---- 导航状态 ----
 const navigationActive = ref(false)
 const isSettingPose = ref(false)
+const multiPointMode = ref(false)
+const waypointQueue = ref([])
+const activeWaypoint = ref(null)
+const waypointAdvancing = ref(false)
+const FEEDBACK_REACHED_THRESHOLD = 0.10
 
 // ---- 状态 ----
 const topics = ref([])
@@ -153,6 +181,8 @@ const planData = ref(null)
 
 // 导航反馈数据
 const navFeedback = ref(null)
+const imuData = ref(null)
+const runtimeTopics = ref({ ...TOPIC_DEFAULTS })
 
 // ---- 图层控制 ----
 const mapLayers = ref({
@@ -176,16 +206,16 @@ let tfSubId = null
 let odomSubId = null
 let planSubId = null
 let feedbackSubId = null // 导航反馈订阅 ID
+let imuSubId = null
 
 // ---- 计算属性 ----
 const connectionState = computed(() => foxglove.connectionState.value)
-const serverName = computed(() => foxglove.serverName.value)
 const errorMessage = computed(() => foxglove.errorMessage.value)
 const isConnected = computed(() => connectionState.value === 'connected')
 
 const statusText = computed(() => {
   switch (connectionState.value) {
-    case 'connected': return `已连接 — ${foxglove.serverName.value}`
+    case 'connected': return '已连接'
     case 'connecting': return '连接中...'
     case 'error': return '连接错误'
     default: return '未连接'
@@ -193,7 +223,8 @@ const statusText = computed(() => {
 })
 
 // ---- 事件处理 ----
-function handleConnect(url) {
+function handleConnect(url = DEFAULT_WS_URL) {
+  if (connectionState.value === 'connected' || connectionState.value === 'connecting') return
   foxglove.connect(url)
 }
 
@@ -212,6 +243,9 @@ function clearAllData() {
   odomData.value = null
   planData.value = null
   navFeedback.value = null // 清除导航反馈数据
+  imuData.value = null
+  waypointQueue.value = []
+  activeWaypoint.value = null
   topics.value = []
 }
 
@@ -227,7 +261,19 @@ function handleDisconnect() {
   odomSubId = null
   planSubId = null
   feedbackSubId = null // 清除订阅 ID
+  imuSubId = null
   clearAllData()
+}
+
+async function loadRuntimeConfig() {
+  try {
+    const res = await fetch(`${API_BASE}/runtime_config`)
+    const data = await res.json()
+    runtimeTopics.value = { ...TOPIC_DEFAULTS, ...(data.topics || {}) }
+  } catch (err) {
+    console.warn('加载运行时配置失败，使用默认话题:', err)
+    runtimeTopics.value = { ...TOPIC_DEFAULTS }
+  }
 }
 
 /**
@@ -242,12 +288,12 @@ function onChannelsReady(event) {
 
   // 1. 声明 /cmd_vel 发布频道
   if (!cmdVelChannelId) {
-    cmdVelChannelId = foxglove.clientAdvertise('/cmd_vel', 'geometry_msgs/Twist', 'json')
+    cmdVelChannelId = foxglove.clientAdvertise(runtimeTopics.value.cmd_vel, 'geometry_msgs/Twist', 'json')
   }
 
   // 2. 订阅 /battery (电压值，单位可能是 0.1V)
   if (!batterySubId) {
-    batterySubId = foxglove.subscribe('/battery', (data) => {
+    batterySubId = foxglove.subscribe(runtimeTopics.value.battery, (data) => {
       // std_msgs/msg/UInt16 → data 字段
       if (data.data !== undefined) {
         batteryVoltage.value = (data.data / 10).toFixed(1)
@@ -265,55 +311,92 @@ function onChannelsReady(event) {
 
   // 3. 订阅 /map
   if (!mapSubId) {
-    mapSubId = foxglove.subscribe('/map', (data) => {
+    mapSubId = foxglove.subscribe(runtimeTopics.value.map, (data) => {
       mapData.value = data
     })
   }
 
   // 4. 订阅 /scan
   if (!scanSubId) {
-    scanSubId = foxglove.subscribe('/scan', (data) => {
+    scanSubId = foxglove.subscribe(runtimeTopics.value.scan, (data) => {
       scanData.value = data
     })
   }
 
   // 5. 订阅 /tf
   if (!tfSubId) {
-    tfSubId = foxglove.subscribe('/tf', (data) => {
+    tfSubId = foxglove.subscribe(runtimeTopics.value.tf, (data) => {
       tfData.value = data
     })
   }
 
   // 6. 订阅 /odom
   if (!odomSubId) {
-    odomSubId = foxglove.subscribe('/odom', (data) => {
+    odomSubId = foxglove.subscribe(runtimeTopics.value.odom, (data) => {
       odomData.value = data
     })
   }
 
   // 7. 声明 /goal_pose 发布频道
   if (!goalPoseChannelId) {
-    goalPoseChannelId = foxglove.clientAdvertise('/goal_pose', 'geometry_msgs/PoseStamped', 'json')
+    goalPoseChannelId = foxglove.clientAdvertise(runtimeTopics.value.goal_pose, 'geometry_msgs/PoseStamped', 'json')
   }
 
   // 8. 订阅 /plan (导航路径)
   if (!planSubId) {
-    planSubId = foxglove.subscribe('/plan', (data) => {
+    planSubId = foxglove.subscribe(runtimeTopics.value.plan, (data) => {
       planData.value = data
     })
   }
 
   // 9. 声明 /initialpose 发布频道
   if (!initialPoseChannelId) {
-    initialPoseChannelId = foxglove.clientAdvertise('/initialpose', 'geometry_msgs/PoseWithCovarianceStamped', 'json')
+    initialPoseChannelId = foxglove.clientAdvertise(runtimeTopics.value.initial_pose, 'geometry_msgs/PoseWithCovarianceStamped', 'json')
   }
 
   // 10. 订阅导航反馈 (距离与预计时间)
   if (!feedbackSubId) {
-    feedbackSubId = foxglove.subscribe('/navigate_to_pose/_action/feedback', (data) => {
-      navFeedback.value = data
+    feedbackSubId = foxglove.subscribe(runtimeTopics.value.navigate_feedback, (data) => {
+      navFeedback.value = normalizeNavFeedback(data)
     })
   }
+
+  // 11. 订阅 IMU（可配置，当前仅缓存数据）
+  if (!imuSubId) {
+    imuSubId = foxglove.subscribe(runtimeTopics.value.imu, (data) => {
+      imuData.value = data
+    })
+  }
+}
+
+function normalizeNavFeedback(data) {
+  if (!data || typeof data !== 'object') return null
+
+  // 已解析扁平结构
+  if (typeof data.distance_remaining === 'number' || data.estimated_time_remaining) {
+    const eta = data.estimated_time_remaining || {}
+    return {
+      distance_remaining: Number.isFinite(data.distance_remaining) ? data.distance_remaining : null,
+      estimated_time_remaining: {
+        sec: Number.isFinite(eta.sec) ? eta.sec : 0,
+        nanosec: Number.isFinite(eta.nanosec) ? eta.nanosec : (Number.isFinite(eta.nsec) ? eta.nsec : 0)
+      }
+    }
+  }
+
+  // action 标准结构: { feedback: { distance_remaining, estimated_time_remaining } }
+  if (data.feedback && typeof data.feedback === 'object') {
+    const eta = data.feedback.estimated_time_remaining || {}
+    return {
+      distance_remaining: Number.isFinite(data.feedback.distance_remaining) ? data.feedback.distance_remaining : null,
+      estimated_time_remaining: {
+        sec: Number.isFinite(eta.sec) ? eta.sec : 0,
+        nanosec: Number.isFinite(eta.nanosec) ? eta.nanosec : (Number.isFinite(eta.nsec) ? eta.nsec : 0)
+      }
+    }
+  }
+
+  return null
 }
 
 // 监听频道就绪事件
@@ -334,9 +417,55 @@ function onVelocityChange({ linearX, angularZ }) {
 
 // ---- 导航目标点设定 ----
 function onGoalSet({ x, y }) {
+  if (multiPointMode.value) return
   if (goalPoseChannelId && isConnected.value) {
     foxglove.sendGoalPose(goalPoseChannelId, x, y, 0)
   }
+}
+
+function sendGoalPose(x, y) {
+  if (goalPoseChannelId && isConnected.value) {
+    foxglove.sendGoalPose(goalPoseChannelId, x, y, 0)
+  }
+}
+
+function dispatchNextWaypoint() {
+  if (!multiPointMode.value) return
+  if (waypointQueue.value.length === 0) {
+    activeWaypoint.value = null
+    return
+  }
+  const next = waypointQueue.value.shift()
+  activeWaypoint.value = next
+  sendGoalPose(next.x, next.y)
+}
+
+function advanceWaypoint() {
+  if (!multiPointMode.value || !activeWaypoint.value) return
+  if (waypointAdvancing.value) return
+  waypointAdvancing.value = true
+  setTimeout(() => {
+    dispatchNextWaypoint()
+    waypointAdvancing.value = false
+  }, 200)
+}
+
+function onWaypointAdd({ x, y }) {
+  if (!multiPointMode.value) return
+  waypointQueue.value.push({ x, y })
+  if (!activeWaypoint.value) {
+    dispatchNextWaypoint()
+  }
+}
+
+function clearWaypoints() {
+  waypointQueue.value = []
+  activeWaypoint.value = null
+  waypointAdvancing.value = false
+}
+
+function onWaypointReached() {
+  advanceWaypoint()
 }
 
 // ---- 初始位置设定 ----
@@ -347,6 +476,26 @@ function onInitialPoseSet({ x, y, yaw }) {
   // 自动退出初始位置模式
   isSettingPose.value = false
 }
+
+watch(multiPointMode, (enabled) => {
+  if (!enabled) clearWaypoints()
+})
+
+watch(navigationActive, (running) => {
+  if (running) {
+    slamMapRef.value?.resetView()
+  } else {
+    clearWaypoints()
+  }
+})
+
+watch(() => navFeedback.value?.distance_remaining, (distance) => {
+  if (!multiPointMode.value || !activeWaypoint.value) return
+  if (typeof distance !== 'number' || !Number.isFinite(distance)) return
+  if (distance <= FEEDBACK_REACHED_THRESHOLD) {
+    advanceWaypoint()
+  }
+})
 
 // ======================== WASD 键盘控制 ========================
 const keyboardState = {
@@ -412,6 +561,8 @@ function handleKeyUp(e) {
 }
 
 onMounted(() => {
+  loadRuntimeConfig()
+  handleConnect()
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
 })

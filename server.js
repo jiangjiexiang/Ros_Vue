@@ -29,6 +29,14 @@ function loadConfig() {
     }
 }
 
+// 运行时配置（前端可读取的可配置项）
+app.get('/api/runtime_config', (req, res) => {
+    const config = loadConfig();
+    res.json({
+        topics: config.topics || {}
+    });
+});
+
 // 通用启动任务接口
 app.post('/api/run_task/:taskName', (req, res) => {
     const taskName = req.params.taskName;

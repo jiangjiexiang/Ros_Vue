@@ -43,22 +43,23 @@
         
         <!-- 悬浮操作提示 -->
         <div v-if="isNavigating && !isSettingPose" class="map-overlay-hint hint-goal">
-          双击地图设定导航目标点
+          {{ multiPointMode ? '双击地图可连续添加航点' : '双击地图设定导航目标点' }}
         </div>
         <div v-if="isSettingPose" class="map-overlay-hint hint-pose">
           按住地图拖动以设定初始位置和朝向
         </div>
 
         <!-- 导航实时反馈面板 -->
-        <div v-if="isNavigating && navFeedback" class="map-overlay-feedback">
+        <div v-if="isNavigating" class="map-overlay-feedback">
           <div class="feedback-item">
             <span class="fb-label">剩余距离</span>
-            <span class="fb-value">{{ navFeedback.distance_remaining.toFixed(2) }} m</span>
+            <span class="fb-value">{{ formattedDistance }}</span>
           </div>
           <div class="feedback-item">
             <span class="fb-label">预计时间</span>
             <span class="fb-value">{{ formattedETA }}</span>
           </div>
+          <div v-if="!hasNavFeedback" class="fb-waiting">等待导航反馈...</div>
         </div>
       </div>
       <div v-else class="map-placeholder">
@@ -74,6 +75,11 @@
       <!-- 初始位置设置成功提示 -->
       <div v-if="settingMsg" class="save-toast save-toast-ok">
         {{ settingMsg }}
+      </div>
+
+      <!-- 单点导航到达提示 -->
+      <div v-if="arriveMsg" class="save-toast save-toast-ok">
+        {{ arriveMsg }}
       </div>
     </div>
 
@@ -115,6 +121,15 @@ const props = defineProps({
   isMapping: Boolean,
   isNavigating: Boolean,
   isSettingPose: Boolean,
+  multiPointMode: Boolean,
+  waypoints: {
+    type: Array,
+    default: () => []
+  },
+  activeWaypoint: {
+    type: Object,
+    default: null
+  },
   navFeedback: Object,
   layers: {
     type: Object,
@@ -139,8 +154,12 @@ const navPathPoints = ref([])  // Array of { x, y }
 const poseAnchor = ref(null)  // { x, y } 按下位置 (世界坐标)
 const poseDrag = ref(null)    // { x, y } 拖动尾端 (世界坐标)
 const settingMsg = ref('')
+const arriveMsg = ref('')
+const singleGoalReachedNotified = ref(false)
 
-const emit = defineEmits(['goal-set', 'initial-pose-set', 'update:isSettingPose'])
+const emit = defineEmits(['goal-set', 'waypoint-add', 'waypoint-reached', 'initial-pose-set', 'update:isSettingPose'])
+const waypointReachThreshold = 0.10
+const reachedWaypointKey = ref('')
 
 // === 导航反馈计算 ===
 const formattedETA = computed(() => {
@@ -149,6 +168,38 @@ const formattedETA = computed(() => {
   const totalSeconds = time.sec + time.nanosec / 1e9
   if (totalSeconds < 0 || totalSeconds > 3600) return '-- s' // 过滤异常值
   return totalSeconds.toFixed(1) + ' s'
+})
+
+const formattedDistance = computed(() => {
+  const feedbackDistance = props.navFeedback?.distance_remaining
+
+  let poseDistance = null
+  const target = props.multiPointMode ? props.activeWaypoint : goalPoint.value
+  if (robotPose.value && target) {
+    const dx = robotPose.value.x - target.x
+    const dy = robotPose.value.y - target.y
+    poseDistance = Math.sqrt(dx * dx + dy * dy)
+  }
+
+  const candidates = []
+  if (typeof feedbackDistance === 'number' && Number.isFinite(feedbackDistance)) {
+    candidates.push(feedbackDistance)
+  }
+  if (typeof poseDistance === 'number' && Number.isFinite(poseDistance)) {
+    candidates.push(poseDistance)
+  }
+  if (candidates.length === 0) return '-- m'
+
+  // 非常接近目标时显示 0，避免浮点抖动
+  const minDistance = Math.min(...candidates)
+  if (minDistance <= 0.03) return '0.00 m'
+  return minDistance.toFixed(2) + ' m'
+})
+
+const hasNavFeedback = computed(() => {
+  if (typeof props.navFeedback?.distance_remaining === 'number') return true
+  const target = props.multiPointMode ? props.activeWaypoint : goalPoint.value
+  return !!(robotPose.value && target)
 })
 
 function togglePoseMode() {
@@ -331,6 +382,28 @@ function requestDraw() {
   }
 }
 
+function drawGoalMarker(ctx, waypoint, index, color) {
+  const gp = worldToPixel(waypoint.x, waypoint.y)
+  const r = 8 / scale.value
+  ctx.strokeStyle = color
+  ctx.lineWidth = 2 / scale.value
+  ctx.beginPath()
+  ctx.arc(gp.x, gp.y, r, 0, Math.PI * 2)
+  ctx.stroke()
+
+  ctx.fillStyle = color
+  ctx.beginPath()
+  ctx.arc(gp.x, gp.y, r * 0.45, 0, Math.PI * 2)
+  ctx.fill()
+
+  const label = String(index + 1)
+  ctx.font = `${12 / scale.value}px var(--font-mono)`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = '#ffffff'
+  ctx.fillText(label, gp.x, gp.y)
+}
+
 /**
  * 绘图逻辑
  */
@@ -417,31 +490,37 @@ function draw() {
     ctx.setLineDash([])
   }
 
-  // 5. 画目标点 (紫色圆圈 + 十字)
-  if (props.layers.goal !== false && goalPoint.value) {
-    const gp = worldToPixel(goalPoint.value.x, goalPoint.value.y)
-    const r = 8 / scale.value
-    // 外圆
-    ctx.strokeStyle = '#a78bfa'
-    ctx.lineWidth = 2 / scale.value
-    ctx.beginPath()
-    ctx.arc(gp.x, gp.y, r, 0, Math.PI * 2)
-    ctx.stroke()
-    // 内圆实心
-    ctx.fillStyle = 'rgba(167, 139, 250, 0.4)'
-    ctx.beginPath()
-    ctx.arc(gp.x, gp.y, r * 0.5, 0, Math.PI * 2)
-    ctx.fill()
-    // 十字线
-    ctx.strokeStyle = '#a78bfa'
-    ctx.lineWidth = 1.5 / scale.value
-    const cross = 14 / scale.value
-    ctx.beginPath()
-    ctx.moveTo(gp.x - cross, gp.y)
-    ctx.lineTo(gp.x + cross, gp.y)
-    ctx.moveTo(gp.x, gp.y - cross)
-    ctx.lineTo(gp.x, gp.y + cross)
-    ctx.stroke()
+  // 5. 画目标点 / 航点
+  if (props.layers.goal !== false) {
+    if (props.multiPointMode) {
+      if (props.activeWaypoint) {
+        drawGoalMarker(ctx, props.activeWaypoint, 0, '#f97316')
+      }
+      for (let i = 0; i < props.waypoints.length; i++) {
+        drawGoalMarker(ctx, props.waypoints[i], i + (props.activeWaypoint ? 1 : 0), '#a78bfa')
+      }
+    } else if (goalPoint.value) {
+      const gp = worldToPixel(goalPoint.value.x, goalPoint.value.y)
+      const r = 8 / scale.value
+      ctx.strokeStyle = '#a78bfa'
+      ctx.lineWidth = 2 / scale.value
+      ctx.beginPath()
+      ctx.arc(gp.x, gp.y, r, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.fillStyle = 'rgba(167, 139, 250, 0.4)'
+      ctx.beginPath()
+      ctx.arc(gp.x, gp.y, r * 0.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#a78bfa'
+      ctx.lineWidth = 1.5 / scale.value
+      const cross = 14 / scale.value
+      ctx.beginPath()
+      ctx.moveTo(gp.x - cross, gp.y)
+      ctx.lineTo(gp.x + cross, gp.y)
+      ctx.moveTo(gp.x, gp.y - cross)
+      ctx.lineTo(gp.x, gp.y + cross)
+      ctx.stroke()
+    }
   }
 
   // 6. 画初始位置箭头 (黄色)
@@ -732,6 +811,7 @@ function onMouseUp(e) {
 // 双击设定导航目标点
 function onDblClick(e) {
   if (!props.isNavigating) return
+  if (props.isSettingPose) return
   const rect = containerRef.value.getBoundingClientRect()
   const canvasX = (e.clientX - rect.left - offsetX.value) / scale.value
   const canvasY = (e.clientY - rect.top - offsetY.value) / scale.value
@@ -741,8 +821,13 @@ function onDblClick(e) {
   const origin = info.origin.position
   const wx = origin.x + canvasX * res
   const wy = origin.y + (info.height - 1 - canvasY) * res
-  goalPoint.value = { x: wx, y: wy }
-  emit('goal-set', { x: wx, y: wy })
+  if (props.multiPointMode) {
+    emit('waypoint-add', { x: wx, y: wy })
+  } else {
+    singleGoalReachedNotified.value = false
+    goalPoint.value = { x: wx, y: wy }
+    emit('goal-set', { x: wx, y: wy })
+  }
   draw()
 }
 
@@ -808,6 +893,68 @@ watch(() => props.mapData, (newData) => {
     updateOffscreenCanvas(newData)
   }
 }, { deep: true })
+
+watch(() => props.multiPointMode, (enabled) => {
+  if (enabled) {
+    goalPoint.value = null
+  }
+  requestDraw()
+})
+
+watch(() => [props.waypoints, props.activeWaypoint, props.multiPointMode], () => {
+  requestDraw()
+}, { deep: true })
+
+watch(() => props.activeWaypoint, (wp) => {
+  if (!wp) {
+    reachedWaypointKey.value = ''
+    return
+  }
+  reachedWaypointKey.value = `${wp.x.toFixed(3)}_${wp.y.toFixed(3)}`
+}, { deep: true })
+
+watch(() => [robotPose.value, props.activeWaypoint, props.multiPointMode, props.isNavigating], () => {
+  if (!props.isNavigating || !props.multiPointMode) return
+  if (!robotPose.value || !props.activeWaypoint) return
+  const dx = robotPose.value.x - props.activeWaypoint.x
+  const dy = robotPose.value.y - props.activeWaypoint.y
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  if (dist <= waypointReachThreshold && reachedWaypointKey.value) {
+    reachedWaypointKey.value = ''
+    emit('waypoint-reached')
+  }
+}, { deep: true })
+
+watch(() => [props.isNavigating, props.multiPointMode, goalPoint.value, robotPose.value, props.navFeedback], () => {
+  if (!props.isNavigating || props.multiPointMode || !goalPoint.value || singleGoalReachedNotified.value) return
+
+  let reached = false
+  const feedbackDistance = props.navFeedback?.distance_remaining
+  if (typeof feedbackDistance === 'number' && Number.isFinite(feedbackDistance) && feedbackDistance <= 0.10) {
+    reached = true
+  }
+
+  if (!reached && robotPose.value) {
+    const dx = robotPose.value.x - goalPoint.value.x
+    const dy = robotPose.value.y - goalPoint.value.y
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (dist <= 0.10) reached = true
+  }
+
+  if (reached) {
+    singleGoalReachedNotified.value = true
+    goalPoint.value = null
+    requestDraw()
+    arriveMsg.value = '已到达导航点'
+    setTimeout(() => { arriveMsg.value = '' }, 2500)
+  }
+}, { deep: true })
+
+watch(() => [props.isNavigating, props.multiPointMode], ([navigating, multi]) => {
+  if (!navigating || multi) {
+    singleGoalReachedNotified.value = false
+  }
+})
 
 onMounted(() => {
   if (props.mapData) updateOffscreenCanvas(props.mapData)
@@ -935,6 +1082,46 @@ canvas {
   color: #fbbf24;
   background: rgba(251, 191, 36, 0.25);
   border: 1px solid rgba(251, 191, 36, 0.4);
+}
+
+.map-overlay-feedback {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 150px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(4px);
+  z-index: 5;
+}
+
+.feedback-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fb-label {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.fb-value {
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  color: #e2e8f0;
+}
+
+.fb-waiting {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  text-align: right;
 }
 @keyframes fadein-down {
   from { opacity: 0; transform: translate(-50%, -10px); }

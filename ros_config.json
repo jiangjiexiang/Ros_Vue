@@ -62,5 +62,18 @@
         "description": "保存地图（-f 后追加地图名和路径）",
         "save_dir": "/home/jiang/workspace/fishbot/maps"
     },
-    "maps_dir": "/home/jiang/workspace/fishbot/maps"
+    "maps_dir": "/home/jiang/workspace/fishbot/maps",
+    "topics": {
+        "cmd_vel": "/cmd_vel",
+        "battery": "/battery",
+        "map": "/map",
+        "scan": "/scan",
+        "tf": "/tf",
+        "odom": "/odom",
+        "plan": "/plan",
+        "goal_pose": "/goal_pose",
+        "initial_pose": "/initialpose",
+        "navigate_feedback": "/navigate_to_pose/_action/feedback",
+        "imu": "/imu"
+    }
 }

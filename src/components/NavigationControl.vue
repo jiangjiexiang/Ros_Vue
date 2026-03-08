@@ -64,9 +64,26 @@
         </button>
       </div>
 
+      <!-- 多点导航 -->
+      <div v-if="isNavigating && !isSettingPose" class="nav-section mt-2">
+        <button
+          class="nav-btn"
+          :class="multiPointMode ? 'btn-waypoint-active' : 'btn-waypoint'"
+          @click="toggleMultiPointMode"
+        >
+          {{ multiPointMode ? '多点导航: 已开启' : '多点导航: 已关闭' }}
+        </button>
+        <div v-if="multiPointMode" class="waypoint-row">
+          <span class="waypoint-count">队列点位: {{ waypointCount }}</span>
+          <button class="btn-clear-waypoints" @click="clearWaypoints" :disabled="waypointCount === 0">
+            清空
+          </button>
+        </div>
+      </div>
+
       <!-- 操作提示 -->
       <div v-if="isNavigating && !isSettingPose" class="nav-hint goal-hint" style="margin-top:4px">
-        双击地图设定导航目标点
+        {{ multiPointMode ? '双击地图连续添加航点，系统将自动依次执行' : '双击地图设定导航目标点' }}
       </div>
       <div v-if="isSettingPose" class="nav-hint pose-hint">
         🟡 按住地图拖动以设定位置和朝向
@@ -81,13 +98,21 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
-  connected: Boolean
+  connected: Boolean,
+  multiPointMode: {
+    type: Boolean,
+    default: false
+  },
+  waypointCount: {
+    type: Number,
+    default: 0
+  }
 })
 
-const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'navigationStarted'])
+const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'navigationStarted', 'clear-waypoints'])
 
 const isNavigating = ref(false)
 const isLoading = ref(false)
@@ -95,6 +120,7 @@ const errorMsg = ref('')
 const maps = ref([])
 const selectedMap = ref('')
 const isSettingPose = ref(false)
+const multiPointMode = ref(props.multiPointMode)
 
 const API_BASE = `http://${window.location.hostname}:3000/api`
 let statusTimer = null
@@ -165,6 +191,11 @@ async function stopNavigation() {
     isSettingPose.value = false
     emit('update:isSettingPose', false)
   }
+  if (multiPointMode.value) {
+    multiPointMode.value = false
+    emit('update:multiPointMode', false)
+    emit('clear-waypoints')
+  }
   try {
     const res = await fetch(`${API_BASE}/stop_navigation`, { method: 'POST' })
     const data = await res.json()
@@ -185,6 +216,22 @@ function togglePoseMode() {
   isSettingPose.value = !isSettingPose.value
   emit('update:isSettingPose', isSettingPose.value)
 }
+
+function toggleMultiPointMode() {
+  multiPointMode.value = !multiPointMode.value
+  emit('update:multiPointMode', multiPointMode.value)
+  if (!multiPointMode.value) {
+    emit('clear-waypoints')
+  }
+}
+
+function clearWaypoints() {
+  emit('clear-waypoints')
+}
+
+watch(() => props.multiPointMode, (value) => {
+  multiPointMode.value = value
+})
 
 onMounted(async () => {
   await loadMaps()
@@ -350,6 +397,63 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   cursor: pointer;
   animation: pose-pulse 1.2s ease-in-out infinite;
+}
+
+.btn-waypoint {
+  width: 100%;
+  padding: 10px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #4ade80;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-waypoint:hover {
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.btn-waypoint-active {
+  width: 100%;
+  padding: 10px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  background: rgba(34, 197, 94, 0.25);
+  border: 1px solid #4ade80;
+  color: #4ade80;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.waypoint-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.waypoint-count {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.btn-clear-waypoints {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  cursor: pointer;
+}
+
+.btn-clear-waypoints:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 @keyframes pose-pulse {

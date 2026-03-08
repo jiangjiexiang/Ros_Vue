@@ -215,6 +215,13 @@ class CdrReader {
         return v
     }
 
+    readInt16() {
+        this.align(2)
+        const v = this.view.getInt16(this.pos, true)
+        this.pos += 2
+        return v
+    }
+
     readInt32() {
         this.align(4)
         const v = this.view.getInt32(this.pos, true)
@@ -746,4 +753,3 @@ export function useFoxglove() {
         findChannelByTopic
     }
 }
-
