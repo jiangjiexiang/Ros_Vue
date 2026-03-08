@@ -2,61 +2,46 @@
     "tasks": {
         "startup": [
             {
-                "id": "foxglove",
-                "description": "Foxglove 数据桥接 (高带宽模式)",
-                "command": "ros2",
+                "id": "rosbridge",
+                "description": "ROS1 rosbridge_websocket",
+                "command": "roslaunch",
                 "args": [
-                    "run",
-                    "foxglove_bridge",
-                    "foxglove_bridge",
-                    "--ros-args",
-                    "-p",
-                    "include_hidden:=true",
-                    "-p",
-                    "send_buffer_limit:=100000000",
-                    "-p",
-                    "num_threads:=4",
-                    "-p",
-                    "max_qos_depth:=10",
-                    "-p",
-                    "min_qos_depth:=10"
+                    "rosbridge_server",
+                    "rosbridge_websocket.launch"
                 ],
                 "delay": 0
             }
         ],
         "mapping": [
             {
-                "id": "mapCartographer",
-                "description": "Cartographer 建图算法",
-                "command": "ros2",
+                "id": "gmapping",
+                "description": "ROS1 GMapping 建图",
+                "command": "roslaunch",
                 "args": [
-                    "launch",
-                    "fishbot_cartographer",
-                    "cartographer.launch.py"
+                    "slam_gmapping",
+                    "slam_gmapping.launch"
                 ],
                 "delay": 0
             }
         ],
         "navigation": [
             {
-                "id": "nav2",
-                "description": "Nav2 导航栈 (AMCL + 路径规划)",
-                "command": "ros2",
+                "id": "move_base",
+                "description": "ROS1 导航栈 (AMCL + move_base)",
+                "command": "roslaunch",
                 "args": [
-                    "launch",
-                    "fishbot_navigation2",
-                    "navigation2.launch.py"
+                    "fishbot_navigation",
+                    "navigation.launch"
                 ],
                 "delay": 0
             }
         ]
     },
     "save_map": {
-        "command": "ros2",
+        "command": "rosrun",
         "args": [
-            "run",
-            "nav2_map_server",
-            "map_saver_cli",
+            "map_server",
+            "map_saver",
             "-f"
         ],
         "description": "保存地图（-f 后追加地图名和路径）",
@@ -70,10 +55,10 @@
         "scan": "/scan",
         "tf": "/tf",
         "odom": "/odom",
-        "plan": "/plan",
-        "goal_pose": "/goal_pose",
+        "plan": "/move_base/NavfnROS/plan",
+        "goal_pose": "/move_base_simple/goal",
         "initial_pose": "/initialpose",
-        "navigate_feedback": "/navigate_to_pose/_action/feedback",
+        "navigate_feedback": "/move_base/feedback",
         "imu": "/imu"
     }
 }

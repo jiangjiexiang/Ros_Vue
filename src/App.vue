@@ -150,10 +150,10 @@ const TOPIC_DEFAULTS = {
   scan: '/scan',
   tf: '/tf',
   odom: '/odom',
-  plan: '/plan',
-  goal_pose: '/goal_pose',
+  plan: '/move_base/NavfnROS/plan',
+  goal_pose: '/move_base_simple/goal',
   initial_pose: '/initialpose',
-  navigate_feedback: '/navigate_to_pose/_action/feedback',
+  navigate_feedback: '/move_base/feedback',
   imu: '/imu'
 }
 

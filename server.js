@@ -58,8 +58,8 @@ app.post('/api/run_task/:taskName', (req, res) => {
                     console.log(`[${id}] 启动: ${description} (${command} ${args.join(' ')})`);
 
                     // 构造包装命令，确保在 shell 中执行并加载 ROS 环境
-                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${args.join(' ')}`;
+                    const ros1Setup = '/home/jiang/workspace/catkin_ws/devel/setup.bash';
+                    const fullCommand = `source /opt/ros/noetic/setup.bash && [ -f ${ros1Setup} ] && source ${ros1Setup}; ${command} ${args.join(' ')}`;
 
                     const proc = spawn('bash', ['-c', fullCommand], {
                         detached: true,
@@ -113,17 +113,17 @@ app.post('/api/stop_task/:taskName', (req, res) => {
                 activeProcesses[id] = null;
 
                 // 针对特定 ROS 2 launch 任务进行强力清场，防止孤儿节点卡住端口
-                if (id === 'nav2' || taskName === 'navigation') {
+                if (id === 'move_base' || taskName === 'navigation') {
                     setTimeout(() => {
-                        exec('pkill -9 -f "navigation2|nav2|component_container_isolated|amcl|bt_navigator"');
+                        exec('pkill -9 -f "move_base|amcl|map_server|global_planner|local_planner"');
                     }, 500);
-                } else if (id === 'mapCartographer' || taskName === 'mapping') {
+                } else if (id === 'gmapping' || taskName === 'mapping') {
                     setTimeout(() => {
-                        exec('pkill -9 -f "cartographer.launch.py|cartographer_node|cartographer_occupancy_grid"');
+                        exec('pkill -9 -f "slam_gmapping|gmapping|map_server"');
                     }, 500);
-                } else if (id === 'foxglove' || taskName === 'startup') {
+                } else if (id === 'rosbridge' || taskName === 'startup') {
                     setTimeout(() => {
-                        exec('pkill -9 -f "foxglove_bridge"');
+                        exec('pkill -9 -f "rosbridge_websocket|rosapi"');
                     }, 500);
                 }
             }
@@ -195,8 +195,8 @@ app.post('/api/start_navigation', (req, res) => {
             setTimeout(() => {
                 if (!activeProcesses[id]) {
                     console.log(`[${id}] 启动导航: ${description}, 地图: ${mapPath}`);
-                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${navArgs.join(' ')}`;
+                    const ros1Setup = '/home/jiang/workspace/catkin_ws/devel/setup.bash';
+                    const fullCommand = `source /opt/ros/noetic/setup.bash && [ -f ${ros1Setup} ] && source ${ros1Setup}; ${command} ${navArgs.join(' ')}`;
 
                     const proc = spawn('bash', ['-c', fullCommand], {
                         detached: true,
@@ -248,8 +248,8 @@ app.post('/api/save_map', (req, res) => {
     const safeName = mapName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_');
     const savePath = `${saveDir}/${safeName}`;
     const args = [...saveMapConfig.args, savePath];
-    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-    const fullCommand = `mkdir -p "${saveDir}" && source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${saveMapConfig.command} ${args.join(' ')}`;
+    const ros1Setup = '/home/jiang/workspace/catkin_ws/devel/setup.bash';
+    const fullCommand = `mkdir -p "${saveDir}" && source /opt/ros/noetic/setup.bash && [ -f ${ros1Setup} ] && source ${ros1Setup}; ${saveMapConfig.command} ${args.join(' ')}`;
 
     console.log(`[save_map] 正在保存地图到: ${savePath}`);
 
