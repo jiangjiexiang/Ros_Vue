@@ -26,6 +26,32 @@ bash start_console.sh
 ```
 启动成功后，在浏览器访问：`http://localhost:5173`
 
+## 部署配置 (重要)
+当您将项目部署到自己的电脑或机器人上时，请务必根据实际路径修改以下配置文件：
+
+### 1. 修改 `ros_config.json`
+该文件位于项目根目录，控制着所有 ROS 2 指令的触发和路径：
+
+*   **指令更新**: 确保 `command` 字段使用 `ros2`，并在 `args` 中配置正确的包名和启动项。
+*   **`save_dir`**: 修改为您希望保存地图的 **绝对路径**。
+    ```json
+    "save_dir": "/home/your_username/your_workspace/maps"
+    ```
+*   **`maps_dir`**: 修改为您读取历史地图的目录。
+*   **`topics`**: 如果您的机器人话题名不同（如雷达不是 `/scan`），请在此处修改。
+
+### 2. 修改 `server.js`
+后端服务中 hardcode 了环境加载命令，请搜索并修改：
+*   **环境加载**: 确保加载的是 `/opt/ros/humble/setup.bash` 以及您本地工作空间的 `install/setup.bash`。
+
+### 3. 修改 `start_console.sh`
+启动脚本中包含工作空间自动检测逻辑：
+*   **`FISHBOT_WORKSPACE`**: 修改为您的 ROS 2 工作空间绝对路径。
+
+### 4. 修改 `src/App.vue` (可选)
+如果网页控制端和机器人不在同一台机器上：
+*   找到 `const DEFAULT_WS_URL`，将 `window.location.hostname` 改为机器人的 **实际 IP 地址**。
+
 ## 配置说明
 项目核心逻辑由 `ros_config.json` 驱动，你可以直接在该文件中修改 ROS 2 指令：
 *   `startup`: 配置后台自动运行的任务（如 Foxglove Bridge 的高带宽模式设置）。
