@@ -250,6 +250,13 @@ class CdrReader {
         return v
     }
 
+    readUint64() {
+        this.align(8)
+        const v = this.view.getBigUint64(this.pos, true)
+        this.pos += 8
+        return v
+    }
+
     readString() {
         const len = this.readUint32() // 含 null 终止符的长度
         if (len <= 1) {
@@ -275,6 +282,13 @@ class CdrReader {
         const arr = new Int8Array(this.view.buffer, this.pos, len)
         this.pos += len
         return Array.from(arr)
+    }
+
+    readUint8Array() {
+        const len = this.readUint32()
+        const arr = new Uint8Array(this.view.buffer, this.pos, len)
+        this.pos += len
+        return arr
     }
 }
 
@@ -509,6 +523,85 @@ function handleCdrMessage(subId, channel, buffer, offset) {
             callback({
                 estimated_time_remaining: { sec: etaSec, nanosec: etaNsec },
                 distance_remaining: distance
+            })
+        } else if (channel.schemaName === 'livox_ros_driver2/msg/CustomMsg' || channel.schemaName === 'livox_ros_driver2/CustomMsg') {
+            const stampSec = reader.readInt32()
+            const stampNsec = reader.readUint32()
+            const frameId = reader.readString()
+            const timebase = reader.readUint64()
+            const pointNum = reader.readUint32()
+            const lidarId = reader.readUint8()
+            reader.readUint8()
+            reader.readUint8()
+            reader.readUint8()
+
+            const numPoints = reader.readUint32()
+            const points = []
+            for (let i = 0; i < numPoints; i++) {
+                reader.align(4)
+                const offsetTime = reader.readUint32()
+                const x = reader.readFloat32()
+                const y = reader.readFloat32()
+                const z = reader.readFloat32()
+                const reflectivity = reader.readUint8()
+                const tag = reader.readUint8()
+                const line = reader.readUint8()
+                points.push({
+                    offset_time: offsetTime,
+                    x,
+                    y,
+                    z,
+                    reflectivity,
+                    tag,
+                    line,
+                    intensity: reflectivity
+                })
+            }
+
+            callback({
+                header: { stamp: { sec: stampSec, nsec: stampNsec }, frame_id: frameId },
+                timebase: timebase.toString(),
+                point_num: pointNum,
+                lidar_id: lidarId,
+                points
+            })
+        } else if (channel.schemaName === 'sensor_msgs/msg/PointCloud2' || channel.schemaName === 'sensor_msgs/PointCloud2') {
+            // Header
+            const stampSec = reader.readInt32()
+            const stampNsec = reader.readUint32()
+            const frameId = reader.readString()
+
+            const height = reader.readUint32()
+            const width = reader.readUint32()
+
+            const fieldCount = reader.readUint32()
+            const fields = []
+            for (let i = 0; i < fieldCount; i++) {
+                const name = reader.readString()
+                const offset = reader.readUint32()
+                const datatype = reader.readUint8()
+                // 对齐到 4 字节读取 count
+                reader.align(4)
+                const count = reader.readUint32()
+                fields.push({ name, offset, datatype, count })
+            }
+
+            const isBigendian = reader.readUint8()
+            const pointStep = reader.readUint32()
+            const rowStep = reader.readUint32()
+            const data = reader.readUint8Array()
+            const isDense = reader.readUint8()
+
+            callback({
+                header: { stamp: { sec: stampSec, nsec: stampNsec }, frame_id: frameId },
+                height,
+                width,
+                fields,
+                is_bigendian: Boolean(isBigendian),
+                point_step: pointStep,
+                row_step: rowStep,
+                data,
+                is_dense: Boolean(isDense)
             })
         } else {
             console.warn(`[Foxglove] 收到未知类型的 CDR 消息: ${channel.schemaName}`)

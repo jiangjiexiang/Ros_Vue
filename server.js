@@ -9,13 +9,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = 3000;
 
 app.use(cors());
 app.use(express.json());
 
 // 记录所有后端的子进程
 let activeProcesses = {};
+
+function shellQuote(value) {
+    return `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+}
 
 // 加载配置文件
 function loadConfig() {
@@ -28,6 +31,45 @@ function loadConfig() {
         return { tasks: { mapping: [] } };
     }
 }
+
+function getBackendPort() {
+    const config = loadConfig();
+    const port = config?.ports?.backend;
+    const n = Number(port);
+    return Number.isFinite(n) && n > 0 ? n : 3000;
+}
+
+function getRosSourceCommands(config) {
+    const paths = config?.paths || {};
+    const sources = [];
+
+    if (paths.ros_setup) {
+        sources.push(`[ -f ${shellQuote(paths.ros_setup)} ] && source ${shellQuote(paths.ros_setup)}`);
+    }
+
+    if (paths.fishbot_workspace) {
+        const fishbotSetup = path.join(paths.fishbot_workspace, 'install/setup.bash');
+        sources.push(`[ -f ${shellQuote(fishbotSetup)} ] && source ${shellQuote(fishbotSetup)}`);
+    }
+
+    if (Array.isArray(paths.extra_workspaces)) {
+        for (const ws of paths.extra_workspaces) {
+            if (!ws) continue;
+            const setupPath = path.join(ws, 'install/setup.bash');
+            sources.push(`[ -f ${shellQuote(setupPath)} ] && source ${shellQuote(setupPath)}`);
+        }
+    }
+
+    return sources.join('; ');
+}
+
+function buildRosCommand(config, commandPart) {
+    const sources = getRosSourceCommands(config);
+    if (!sources) return commandPart;
+    return `${sources}; ${commandPart}`;
+}
+
+const port = getBackendPort();
 
 // 运行时配置（前端可读取的可配置项）
 app.get('/api/runtime_config', (req, res) => {
@@ -56,10 +98,7 @@ app.post('/api/run_task/:taskName', (req, res) => {
             setTimeout(() => {
                 if (!activeProcesses[id]) {
                     console.log(`[${id}] 启动: ${description} (${command} ${args.join(' ')})`);
-
-                    // 构造包装命令，确保在 shell 中执行并加载 ROS 环境
-                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${args.join(' ')}`;
+                    const fullCommand = buildRosCommand(config, `${command} ${args.join(' ')}`);
 
                     const proc = spawn('bash', ['-c', fullCommand], {
                         detached: true,
@@ -195,8 +234,7 @@ app.post('/api/start_navigation', (req, res) => {
             setTimeout(() => {
                 if (!activeProcesses[id]) {
                     console.log(`[${id}] 启动导航: ${description}, 地图: ${mapPath}`);
-                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${navArgs.join(' ')}`;
+                    const fullCommand = buildRosCommand(config, `${command} ${navArgs.join(' ')}`);
 
                     const proc = spawn('bash', ['-c', fullCommand], {
                         detached: true,
@@ -248,8 +286,7 @@ app.post('/api/save_map', (req, res) => {
     const safeName = mapName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_');
     const savePath = `${saveDir}/${safeName}`;
     const args = [...saveMapConfig.args, savePath];
-    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-    const fullCommand = `mkdir -p "${saveDir}" && source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${saveMapConfig.command} ${args.join(' ')}`;
+    const fullCommand = buildRosCommand(config, `mkdir -p ${shellQuote(saveDir)} && ${saveMapConfig.command} ${args.join(' ')}`);
 
     console.log(`[save_map] 正在保存地图到: ${savePath}`);
 

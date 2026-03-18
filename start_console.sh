@@ -6,12 +6,103 @@
 # 获取脚本所在目录
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 WORKSPACE_DIR="$SCRIPT_DIR"
+CONFIG_PATH="$WORKSPACE_DIR/ros_config.json"
+
+# 从 ros_config.json 读取可配置路径
+get_config_value() {
+    local key_path="$1"
+    if ! command -v python3 > /dev/null 2>&1; then
+        echo ""
+        return
+    fi
+    if [ ! -f "$CONFIG_PATH" ]; then
+        echo ""
+        return
+    fi
+    python3 - "$CONFIG_PATH" "$key_path" <<'PY'
+import json, sys
+cfg_path = sys.argv[1]
+key_path = sys.argv[2].split('.')
+try:
+    with open(cfg_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    cur = data
+    for k in key_path:
+        if isinstance(cur, dict) and k in cur:
+            cur = cur[k]
+        else:
+            cur = ""
+            break
+    print(cur if isinstance(cur, str) else "")
+except Exception:
+    print("")
+PY
+}
+
+get_config_array() {
+    local key_path="$1"
+    if ! command -v python3 > /dev/null 2>&1; then
+        return
+    fi
+    if [ ! -f "$CONFIG_PATH" ]; then
+        return
+    fi
+    python3 - "$CONFIG_PATH" "$key_path" <<'PY'
+import json, sys
+cfg_path = sys.argv[1]
+key_path = sys.argv[2].split('.')
+try:
+    with open(cfg_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    cur = data
+    for k in key_path:
+        if isinstance(cur, dict) and k in cur:
+            cur = cur[k]
+        else:
+            cur = []
+            break
+    if isinstance(cur, list):
+        for item in cur:
+            if isinstance(item, str) and item.strip():
+                print(item)
+except Exception:
+    pass
+PY
+}
+
+ROS_SETUP_DEFAULT="/opt/ros/humble/setup.bash"
+FISHBOT_WORKSPACE_DEFAULT="/home/jiang/workspace/fishbot"
+ROS_SETUP_PATH="$(get_config_value "paths.ros_setup")"
+FISHBOT_WORKSPACE="$(get_config_value "paths.fishbot_workspace")"
+EXTRA_WORKSPACES=()
+while IFS= read -r line; do
+    EXTRA_WORKSPACES+=("$line")
+done < <(get_config_array "paths.extra_workspaces")
+FRONTEND_PORT="$(get_config_value "ports.frontend")"
+BACKEND_PORT="$(get_config_value "ports.backend")"
+NVM_VERSION="$(get_config_value "node.nvm_version")"
+NODE_VERSION="$(get_config_value "node.version")"
+STARTUP_CLEANUP_REGEX="$(get_config_value "cleanup.startup_regex")"
+SHUTDOWN_CLEANUP_REGEX="$(get_config_value "cleanup.shutdown_regex")"
+QT_X11_NO_MITSHM_VALUE="$(get_config_value "env.qt_x11_no_mitshm")"
+LIBGL_ALWAYS_SOFTWARE_VALUE="$(get_config_value "env.libgl_always_software")"
+GAZEBO_PLUGIN_PATH_APPEND="$(get_config_value "env.gazebo_plugin_path_append")"
+if [ -z "$ROS_SETUP_PATH" ]; then ROS_SETUP_PATH="$ROS_SETUP_DEFAULT"; fi
+if [ -z "$FISHBOT_WORKSPACE" ]; then FISHBOT_WORKSPACE="$FISHBOT_WORKSPACE_DEFAULT"; fi
+if [ -z "$FRONTEND_PORT" ]; then FRONTEND_PORT="5173"; fi
+if [ -z "$BACKEND_PORT" ]; then BACKEND_PORT="3000"; fi
+if [ -z "$NVM_VERSION" ]; then NVM_VERSION="v0.39.7"; fi
+if [ -z "$NODE_VERSION" ]; then NODE_VERSION="lts/*"; fi
+if [ -z "$STARTUP_CLEANUP_REGEX" ]; then STARTUP_CLEANUP_REGEX="gzserver|gzclient|gazebo|rviz2|ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2"; fi
+if [ -z "$SHUTDOWN_CLEANUP_REGEX" ]; then SHUTDOWN_CLEANUP_REGEX="ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2"; fi
+if [ -z "$QT_X11_NO_MITSHM_VALUE" ]; then QT_X11_NO_MITSHM_VALUE="1"; fi
+if [ -z "$LIBGL_ALWAYS_SOFTWARE_VALUE" ]; then LIBGL_ALWAYS_SOFTWARE_VALUE="0"; fi
 
 echo "---------------------------------------------------"
 echo "正在启动机器人中控台..."
 echo "工作目录: $WORKSPACE_DIR"
 echo "正在清理先前可能残留的后台进程 (Gazebo, ROS 2, RViz2)..."
-pkill -9 -u "$(whoami)" -f "gzserver|gzclient|gazebo|rviz2|ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2" > /dev/null 2>&1
+pkill -9 -u "$(whoami)" -f "$STARTUP_CLEANUP_REGEX" > /dev/null 2>&1
 ros2 daemon stop > /dev/null 2>&1
 sleep 1
 echo "---------------------------------------------------"
@@ -24,19 +115,42 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
 fi
 
 if ! command -v node &> /dev/null; then
-    echo "错误: 未检测到 Node.js。请确保已安装 Node.js (建议使用 NVM)。"
-    exit 1
+    echo "未检测到 Node.js，准备自动安装 (NVM + Node.js LTS)..."
+
+    # 安装 NVM
+    if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+        echo "正在安装 NVM..."
+        curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
+        if [ -s "$NVM_DIR/nvm.sh" ]; then
+            . "$NVM_DIR/nvm.sh"
+        fi
+    fi
+
+    if ! command -v nvm &> /dev/null; then
+        echo "错误: NVM 安装失败，请检查网络后重试。"
+        exit 1
+    fi
+
+    # 安装 Node.js LTS (建议版本)
+    echo "正在安装 Node.js (${NODE_VERSION})..."
+    nvm install "$NODE_VERSION"
+    nvm use "$NODE_VERSION"
+
+    if ! command -v node &> /dev/null; then
+        echo "错误: Node.js 安装失败，请检查网络后重试。"
+        exit 1
+    fi
+    echo "Node.js 安装完成: $(node -v)"
 fi
 
 # 2. 检查 Foxglove Bridge# 2. 检查 ROS 2 依赖
 echo "检查 ROS 2 依赖..."
 if ! command -v ros2 &> /dev/null; then
     echo "提示: 未检测到 ROS 2 环境，尝试加载默认安装路径..."
-    [ -f "/opt/ros/humble/setup.bash" ] && source /opt/ros/humble/setup.bash
+    [ -f "$ROS_SETUP_PATH" ] && source "$ROS_SETUP_PATH"
 fi
 
 # 2.5 自动加载本地工作空间 (fishbot)
-FISHBOT_WORKSPACE="/home/jiang/workspace/fishbot"
 if [ -f "$FISHBOT_WORKSPACE/install/setup.bash" ]; then
     echo "发现 fishbot 工作空间，正在加载环境..."
     source "$FISHBOT_WORKSPACE/install/setup.bash"
@@ -44,11 +158,25 @@ else
     echo "警告: 未能在 $FISHBOT_WORKSPACE 找到安装环境，请确保已执行 colcon build"
 fi
 
+# 2.5.1 加载额外工作空间 (用于传感器/自定义消息)
+if [ "${#EXTRA_WORKSPACES[@]}" -gt 0 ]; then
+    for ws in "${EXTRA_WORKSPACES[@]}"; do
+        if [ -f "$ws/install/setup.bash" ]; then
+            echo "加载额外工作空间: $ws"
+            source "$ws/install/setup.bash"
+        else
+            echo "警告: 未能在 $ws 找到安装环境，请确保已执行 colcon build"
+        fi
+    done
+fi
+
 # 2.6 WSL 兼容性设置 (解决 Gazebo 报错和显卡显示问题)
-export QT_X11_NO_MITSHM=1
-export LIBGL_ALWAYS_SOFTWARE=0 # 如果仿真崩溃，可尝试改为 1
+export QT_X11_NO_MITSHM="$QT_X11_NO_MITSHM_VALUE"
+export LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE_VALUE" # 如果仿真崩溃，可尝试改为 1
 # 修复 Gazebo Audio 报错 (WSL 通常没有默认音频设备)
-export GAZEBO_PLUGIN_PATH=$GAZEBO_PLUGIN_PATH:/opt/ros/humble/lib
+if [ -n "$GAZEBO_PLUGIN_PATH_APPEND" ]; then
+    export GAZEBO_PLUGIN_PATH=$GAZEBO_PLUGIN_PATH:$GAZEBO_PLUGIN_PATH_APPEND
+fi
 
 if ! command -v ros2 &> /dev/null; then
     echo "错误: 依然无法加载 ROS 2 环境，请检查安装。"
@@ -56,7 +184,25 @@ if ! command -v ros2 &> /dev/null; then
 fi
 
 if ! ros2 pkg list | grep "foxglove_bridge" > /dev/null 2>&1; then
-    echo "警告: 未检测到 foxglove_bridge。可以运行: sudo apt install -y ros-$ROS_DISTRO-foxglove-bridge"
+    echo "未检测到 foxglove_bridge，准备自动安装..."
+    if command -v apt-get > /dev/null 2>&1; then
+        if command -v sudo > /dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y "ros-${ROS_DISTRO}-foxglove-bridge"
+        else
+            echo "错误: 未找到 sudo，无法自动安装 foxglove_bridge。"
+            exit 1
+        fi
+    else
+        echo "错误: 未找到 apt-get，无法自动安装 foxglove_bridge。"
+        exit 1
+    fi
+
+    if ! ros2 pkg list | grep "foxglove_bridge" > /dev/null 2>&1; then
+        echo "错误: foxglove_bridge 安装失败，请检查网络或 apt 源。"
+        exit 1
+    fi
+    echo "OK: foxglove_bridge 已安装。"
 else
     echo "OK: Foxglove Bridge 已准备就绪。"
 fi
@@ -75,16 +221,16 @@ LOCAL_IP=$(hostname -I | awk '{print $1}')
 
 echo ""
 echo "中控台即将运行。"
-echo "本机访问地址: http://localhost:5173"
+echo "本机访问地址: http://localhost:${FRONTEND_PORT}"
 if [ -n "$LOCAL_IP" ]; then
-    echo "外部设备访问: http://$LOCAL_IP:5173"
+    echo "外部设备访问: http://$LOCAL_IP:${FRONTEND_PORT}"
 fi
 echo "按下 Ctrl+C 可停止运行。"
 echo "---------------------------------------------------"
 
 # 4. 启动后端服务 (管理 ROS 2 任务)
 if [ -f "server.js" ]; then
-    echo "正在启动后端服务 (端口 3000)..."
+    echo "正在启动后端服务 (端口 ${BACKEND_PORT})..."
     node server.js &
     BACKEND_PID=$!
     
@@ -93,7 +239,7 @@ if [ -f "server.js" ]; then
 
     # 触发自动启动任务 (例如 Foxglove)
     echo "正在触发自动启动服务..."
-    curl -s -X POST http://localhost:3000/api/run_task/startup > /dev/null
+    curl -s -X POST "http://localhost:${BACKEND_PORT}/api/run_task/startup" > /dev/null
     
     # 处理退出信号，确保先停止 ROS 任务再关闭后端
     CLEANUP_DONE=false
@@ -106,12 +252,12 @@ if [ -f "server.js" ]; then
         echo "正在停止机器人中控台服务..."
         
         # 释放所有由后端启动的 ROS 任务 (静默执行)
-        curl -s -X POST http://localhost:3000/api/stop_task/startup > /dev/null 2>&1
-        curl -s -X POST http://localhost:3000/api/stop_task/mapping > /dev/null 2>&1
+        curl -s -X POST "http://localhost:${BACKEND_PORT}/api/stop_task/startup" > /dev/null 2>&1
+        curl -s -X POST "http://localhost:${BACKEND_PORT}/api/stop_task/mapping" > /dev/null 2>&1
         
         # 强制清理可能的残留 ROS 2 进程 (安全起见)
         # 仅针对由当前用户启动的相关进程，排除 Gazebo (用户手动管理)
-        pkill -9 -u "$(whoami)" -f "ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2" > /dev/null 2>&1
+        pkill -9 -u "$(whoami)" -f "$SHUTDOWN_CLEANUP_REGEX" > /dev/null 2>&1
         ros2 daemon stop > /dev/null 2>&1
         
         # 杀掉后端进程
@@ -129,4 +275,4 @@ fi
 
 # 5. 启动开发服务器 (前端界面)
 echo "正在启动前端界面..."
-npm run dev
+VITE_BACKEND_PORT="$BACKEND_PORT" npm run dev -- --port "$FRONTEND_PORT"

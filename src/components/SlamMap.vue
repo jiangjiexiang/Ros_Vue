@@ -16,7 +16,7 @@
         <button v-if="isMapping" class="btn-mini btn-mini-save" @click="openSaveDialog" :disabled="isSaving">
           {{ isSaving ? '保存中...' : '保存地图' }}
         </button>
-        <button v-if="hasMap" class="btn-mini" @click="resetView">重置视图</button>
+        <button v-if="hasMap || isLidar3DMode" class="btn-mini" @click="resetView">重置视图</button>
       </div>
     </div>
     <div class="card-body">
@@ -33,24 +33,25 @@
         @touchmove.prevent="onTouchMove"
         @touchend="onMouseUp"
         @dblclick="onDblClick"
-        :style="{ cursor: isSettingPose ? 'crosshair' : isNavigating ? 'crosshair' : (isDragging ? 'grabbing' : 'grab') }"
+        :style="{ cursor: canvasCursor }"
       >
         <canvas ref="mapCanvasRef" />
         <div class="map-info">
-          <span v-if="mapInfo">{{ mapInfo.width }} × {{ mapInfo.height }} | 缩放: {{ (scale * 100).toFixed(0) }}%</span>
+          <span v-if="isLidar3DMode">3D点云 | Yaw: {{ lidarYawDeg }}° | Pitch: {{ lidarPitchDeg }}° | Zoom: {{ lidarDistance.toFixed(1) }}</span>
+          <span v-else-if="mapInfo">{{ mapInfo.width }} × {{ mapInfo.height }} | 缩放: {{ (scale * 100).toFixed(0) }}%</span>
           <span v-else>无地图模式 | 缩放: {{ (scale * 100).toFixed(0) }}%</span>
         </div>
         
         <!-- 悬浮操作提示 -->
-        <div v-if="isNavigating && !isSettingPose" class="map-overlay-hint hint-goal">
+        <div v-if="isNavigating && !isSettingPose && !isLidar3DMode" class="map-overlay-hint hint-goal">
           {{ multiPointMode ? '双击地图可连续添加航点' : '双击地图设定导航目标点' }}
         </div>
-        <div v-if="isSettingPose" class="map-overlay-hint hint-pose">
+        <div v-if="isSettingPose && !isLidar3DMode" class="map-overlay-hint hint-pose">
           按住地图拖动以设定初始位置和朝向
         </div>
 
         <!-- 导航实时反馈面板 -->
-        <div v-if="isNavigating" class="map-overlay-feedback">
+        <div v-if="isNavigating && !isLidar3DMode" class="map-overlay-feedback">
           <div class="feedback-item">
             <span class="fb-label">剩余距离</span>
             <span class="fb-value">{{ formattedDistance }}</span>
@@ -116,6 +117,7 @@ const props = defineProps({
   connected: Boolean,
   mapData: Object,
   scanData: Object,
+  lidarData: Object,
   tfData: Object,
   planData: Object,
   isMapping: Boolean,
@@ -133,7 +135,7 @@ const props = defineProps({
   navFeedback: Object,
   layers: {
     type: Object,
-    default: () => ({ map: true, scan: true, robot: true, path: true, goal: true })
+    default: () => ({ map: true, scan: true, lidar: true, robot: true, path: true, goal: true })
   }
 })
 
@@ -253,16 +255,38 @@ const offsetY = ref(0)
 // 机器人与雷达状态
 const robotPose = ref(null) // { x, y, yaw } in map frame
 const laserPoints = ref([]) // Array of { x, y } in map frame
+const pointCloudPoints = ref([]) // Array of { x, y, z } in lidar frame
 const sensorOffset = ref({ x: 0, y: 0, yaw: 0 }) // { x, y, yaw } from base_link to sensor
+
+// 3D 点云视角状态（仿 RViz 交互）
+const lidarYaw = ref(0.8)
+const lidarPitch = ref(0.55)
+const lidarDistance = ref(8)
+const lidarCenter = ref({ x: 0, y: 0, z: 0 })
+const lidarPointSize = ref(2.2)
+const lidarPanX = ref(0)
+const lidarPanY = ref(0)
 
 // 交互状态
 let isDragging = false
 let lastMouseX = 0
 let lastMouseY = 0
+let lidarDragMode = null // 'rotate' | 'pan'
 
 const shouldShowCanvas = computed(() => {
-  return props.connected && (props.mapData || props.scanData || props.tfData)
+  return props.connected && (props.mapData || props.scanData || props.tfData || (props.layers.lidar && props.lidarData))
 })
+
+const isLidar3DMode = computed(() => Boolean(props.layers.lidar && props.lidarData))
+const lidarYawDeg = computed(() => Math.round((lidarYaw.value * 180) / Math.PI))
+const lidarPitchDeg = computed(() => Math.round((lidarPitch.value * 180) / Math.PI))
+const canvasCursor = computed(() => {
+  if (isLidar3DMode.value) return isDragging ? 'grabbing' : 'grab'
+  if (props.isSettingPose) return 'crosshair'
+  if (props.isNavigating) return 'crosshair'
+  return isDragging ? 'grabbing' : 'grab'
+})
+const ROBOT_MARKER_COLOR = '#00d4ff'
 
 const hasMap = computed(() => {
   return props.mapData && props.mapData.info && props.mapData.data
@@ -404,6 +428,82 @@ function drawGoalMarker(ctx, waypoint, index, color) {
   ctx.fillText(label, gp.x, gp.y)
 }
 
+function colorForLidarPoint() {
+  return '#ff3b30'
+}
+
+function projectLidarPoint(point) {
+  const cx = point.x - lidarCenter.value.x
+  const cy = point.y - lidarCenter.value.y
+  const cz = point.z - lidarCenter.value.z
+
+  const cyaw = Math.cos(lidarYaw.value)
+  const syaw = Math.sin(lidarYaw.value)
+  const cp = Math.cos(lidarPitch.value)
+  const sp = Math.sin(lidarPitch.value)
+
+  const x1 = cx * cyaw - cy * syaw
+  const y1 = cx * syaw + cy * cyaw
+  const z1 = cz
+
+  const y2 = y1 * cp - z1 * sp
+  const z2 = y1 * sp + z1 * cp
+
+  const f = 700 / (lidarDistance.value * 100)
+  const denom = Math.max(0.2, lidarDistance.value - z2 * f)
+  const s = 320 / denom
+  return { x: x1 * s, y: y2 * s, depth: z2, size: Math.max(1.2, lidarPointSize.value * (1.2 - Math.min(1, Math.max(0, z2 / (lidarDistance.value + 1))))) }
+}
+
+function drawLidar3D(ctx, canvasWidth, canvasHeight) {
+  const bg = ctx.createLinearGradient(0, 0, 0, canvasHeight)
+  bg.addColorStop(0, '#08121d')
+  bg.addColorStop(1, '#05080d')
+  ctx.fillStyle = bg
+  ctx.fillRect(0, 0, canvasWidth, canvasHeight)
+
+  ctx.save()
+  ctx.translate(canvasWidth / 2 + lidarPanX.value, canvasHeight / 2 + lidarPanY.value)
+  const total = pointCloudPoints.value.length
+  const targetRenderPoints = isDragging ? 6000 : 12000
+  const stride = Math.max(1, Math.ceil(total / targetRenderPoints))
+  ctx.fillStyle = colorForLidarPoint()
+  for (let i = 0; i < total; i += stride) {
+    const pr = projectLidarPoint(pointCloudPoints.value[i])
+    if (!Number.isFinite(pr.x) || !Number.isFinite(pr.y) || !Number.isFinite(pr.depth)) continue
+    const size = Math.max(1, pr.size)
+    ctx.fillRect(pr.x - size * 0.5, pr.y - size * 0.5, size, size)
+  }
+
+  if (props.layers.robot !== false) {
+    // 在 3D 点云中叠加机器人基座参考点，便于区分机器人位置
+    const ox = sensorOffset.value.x || 0
+    const oy = sensorOffset.value.y || 0
+    const oyaw = sensorOffset.value.yaw || 0
+    const c = Math.cos(oyaw)
+    const s = Math.sin(oyaw)
+    const robotInLidar = {
+      x: -(c * ox + s * oy),
+      y: s * ox - c * oy,
+      z: 0
+    }
+    const rp = projectLidarPoint(robotInLidar)
+    if (Number.isFinite(rp.x) && Number.isFinite(rp.y)) {
+      const r = Math.max(3, 3 / Math.max(0.7, Math.min(2, lidarDistance.value * 0.15)))
+      ctx.beginPath()
+      ctx.fillStyle = ROBOT_MARKER_COLOR
+      ctx.arc(rp.x, rp.y, r, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.beginPath()
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 1.5
+      ctx.arc(rp.x, rp.y, r + 2, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }
+  ctx.restore()
+}
+
 /**
  * 绘图逻辑
  */
@@ -416,6 +516,11 @@ function draw() {
   canvas.height = container.clientHeight
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  if (isLidar3DMode.value) {
+    drawLidar3D(ctx, canvas.width, canvas.height)
+    return
+  }
 
   const isMapVisible = props.layers.map && offscreenCanvas
   const isScanVisible = props.layers.scan && laserPoints.value.length > 0
@@ -453,14 +558,14 @@ function draw() {
     }
   }
 
-  // 3. 画机器人 (蓝色箭头)
+  // 3. 画机器人（独立高亮颜色箭头）
   if (isRobotVisible) {
     const pix = worldToPixel(robotPose.value.x, robotPose.value.y)
     ctx.save()
     ctx.translate(pix.x, pix.y)
     ctx.rotate(-robotPose.value.yaw)
     
-    ctx.fillStyle = '#6366f1'
+    ctx.fillStyle = ROBOT_MARKER_COLOR
     ctx.beginPath()
     ctx.moveTo(8 / scale.value, 0)
     ctx.lineTo(-6 / scale.value, -6 / scale.value)
@@ -591,6 +696,7 @@ watch(() => props.planData, (newData) => {
 // /tf 话题分别发布各段变换，我们需要缓存并组合它们
 
 const tfTree = {}  // { 'parent|child': { translation, rotation } }
+const MAX_POINTCLOUD_POINTS = 12000
 
 function quatToYaw(q) {
   return Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
@@ -663,6 +769,9 @@ watch(() => props.tfData, (newData) => {
   }
 
   requestDraw()
+  if (props.lidarData) {
+    updatePointCloudPoints()
+  }
 }, { deep: true })
 
 // 处理雷达数据：计算打击点坐标
@@ -697,6 +806,88 @@ watch(() => props.scanData, (newData) => {
   requestDraw()
 }, { deep: true })
 
+function updatePointCloudPoints() {
+  const pc = props.lidarData
+  if (!pc) {
+    pointCloudPoints.value = []
+    return
+  }
+
+  const points = []
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+  if (Array.isArray(pc.points) && pc.points.length > 0) {
+    const stride = Math.max(1, Math.ceil(pc.points.length / MAX_POINTCLOUD_POINTS))
+    for (let i = 0; i < pc.points.length; i += stride) {
+      const p = pc.points[i]
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) continue
+      points.push({ x: p.x, y: p.y, z: p.z })
+      minX = Math.min(minX, p.x)
+      maxX = Math.max(maxX, p.x)
+      minY = Math.min(minY, p.y)
+      maxY = Math.max(maxY, p.y)
+      minZ = Math.min(minZ, p.z)
+      maxZ = Math.max(maxZ, p.z)
+    }
+    pointCloudPoints.value = points
+    if (points.length > 0) {
+      lidarCenter.value = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2 }
+    }
+    return
+  }
+
+  if (!pc.data || !pc.fields || !pc.point_step) {
+    pointCloudPoints.value = []
+    return
+  }
+
+  const fields = new Map()
+  for (const f of pc.fields) fields.set(f.name, f)
+  const fieldX = fields.get('x')
+  const fieldY = fields.get('y')
+  const fieldZ = fields.get('z')
+  if (!fieldX || !fieldY || fieldX.datatype !== 7 || fieldY.datatype !== 7 || (fieldZ && fieldZ.datatype !== 7)) {
+    pointCloudPoints.value = []
+    return
+  }
+
+  const data = pc.data
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  const step = pc.point_step
+  const totalPoints = pc.width * pc.height || Math.floor(data.byteLength / step)
+  const stride = Math.max(1, Math.ceil(totalPoints / MAX_POINTCLOUD_POINTS))
+  const little = !pc.is_bigendian
+  for (let i = 0; i < totalPoints; i += stride) {
+    const base = i * step
+    if (base + step > data.byteLength) break
+    const x = view.getFloat32(base + fieldX.offset, little)
+    const y = view.getFloat32(base + fieldY.offset, little)
+    const z = fieldZ ? view.getFloat32(base + fieldZ.offset, little) : 0
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue
+    points.push({ x, y, z })
+    minX = Math.min(minX, x)
+    maxX = Math.max(maxX, x)
+    minY = Math.min(minY, y)
+    maxY = Math.max(maxY, y)
+    minZ = Math.min(minZ, z)
+    maxZ = Math.max(maxZ, z)
+  }
+
+  pointCloudPoints.value = points
+  if (points.length > 0) {
+    lidarCenter.value = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2 }
+  }
+}
+
+watch(() => props.lidarData, () => {
+  updatePointCloudPoints()
+  requestDraw()
+})
+
 function autoFit() {
   if (!offscreenCanvas || !containerRef.value) return
   const container = containerRef.value
@@ -716,11 +907,27 @@ function autoFit() {
 }
 
 function resetView() {
+  if (isLidar3DMode.value) {
+    lidarYaw.value = 0.8
+    lidarPitch.value = 0.55
+    lidarDistance.value = 8
+    lidarPanX.value = 0
+    lidarPanY.value = 0
+    requestDraw()
+    return
+  }
   autoFit()
 }
 
 // ---- 事件处理 ----
 function onWheel(e) {
+  if (isLidar3DMode.value) {
+    const delta = Math.sign(e.deltaY)
+    lidarDistance.value = Math.max(3, Math.min(20, lidarDistance.value + delta * 0.4))
+    requestDraw()
+    return
+  }
+
   const zoomSpeed = 0.1
   const oldScale = scale.value
   const delta = -Math.sign(e.deltaY)
@@ -740,6 +947,24 @@ function onWheel(e) {
 }
 
 function onMouseDown(e) {
+  if (isLidar3DMode.value) {
+    const isTouchLike = typeof e.button !== 'number'
+    if (isTouchLike) {
+      lidarDragMode = 'rotate'
+    } else if (e.button === 0) {
+      lidarDragMode = 'rotate'
+    } else if (e.button === 1) {
+      lidarDragMode = 'pan'
+      e.preventDefault()
+    } else {
+      return
+    }
+    isDragging = true
+    lastMouseX = e.clientX
+    lastMouseY = e.clientY
+    return
+  }
+
   if (props.isSettingPose) {
     // 初始位置模式: 记录按下点，禁止地图拖动
     const rect = containerRef.value.getBoundingClientRect()
@@ -760,6 +985,25 @@ function onMouseDown(e) {
 }
 
 function onMouseMove(e) {
+  if (isLidar3DMode.value) {
+    if (!isDragging) return
+    const dx = e.clientX - lastMouseX
+    const dy = e.clientY - lastMouseY
+    if (lidarDragMode === 'pan') {
+      e.preventDefault()
+      lidarPanX.value += dx
+      lidarPanY.value += dy
+    } else {
+      // 与 RViz 交互方向保持一致：拖动画面向左，视角向左转
+      lidarYaw.value -= dx * 0.01
+      lidarPitch.value = Math.max(-1.2, Math.min(1.2, lidarPitch.value - dy * 0.01))
+    }
+    lastMouseX = e.clientX
+    lastMouseY = e.clientY
+    requestDraw()
+    return
+  }
+
   if (props.isSettingPose && poseAnchor.value) {
     const rect = containerRef.value.getBoundingClientRect()
     const cx = (e.clientX - rect.left - offsetX.value) / scale.value
@@ -783,6 +1027,12 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
+  if (isLidar3DMode.value) {
+    isDragging = false
+    lidarDragMode = null
+    return
+  }
+
   if (props.isSettingPose && poseAnchor.value) {
     let yaw = 0
     if (poseDrag.value) {
@@ -810,6 +1060,7 @@ function onMouseUp(e) {
 
 // 双击设定导航目标点
 function onDblClick(e) {
+  if (isLidar3DMode.value) return
   if (!props.isNavigating) return
   if (props.isSettingPose) return
   const rect = containerRef.value.getBoundingClientRect()
@@ -862,6 +1113,15 @@ function onTouchMove(e) {
   if (e.touches.length === 1) {
     onMouseMove(e.touches[0])
   } else if (e.touches.length === 2) {
+    if (isLidar3DMode.value) {
+      const dist = getPinchDist(e)
+      const zoomFactor = dist / initialPinchDist
+      lidarDistance.value = Math.max(3, Math.min(20, lidarDistance.value / Math.max(0.6, Math.min(1.4, zoomFactor))))
+      initialPinchDist = dist
+      requestDraw()
+      return
+    }
+
     const dist = getPinchDist(e)
     const center = getPinchCenter(e)
     const rect = containerRef.value.getBoundingClientRect()
@@ -1034,8 +1294,10 @@ defineExpose({
 }
 .map-canvas-container {
   width: 100%;
-  flex: 1;
-  min-height: 0;
+  height: min(68vh, 620px);
+  min-height: 360px;
+  max-height: 620px;
+  flex: none;
   position: relative;
   overflow: hidden;
   background: #000;
@@ -1044,13 +1306,20 @@ defineExpose({
 .map-canvas-container:active {
   cursor: grabbing;
 }
+
+@media (max-width: 900px) {
+  .map-canvas-container {
+    height: min(52vh, 460px);
+    min-height: 280px;
+  }
+}
 canvas {
   display: block;
 }
 
 .map-info {
   position: absolute;
-  top: 12px;
+  bottom: 12px;
   left: 12px;
   background: rgba(0, 0, 0, 0.6);
   padding: 4px 10px;

@@ -26,6 +26,7 @@
           :connected="isConnected"
           :mapData="mapData"
           :scanData="scanData"
+          :lidarData="lidarData"
           :tfData="tfData"
           :planData="planData"
           :layers="mapLayers"
@@ -99,6 +100,13 @@
                 </label>
               </div>
               <div class="layer-item">
+                <span>显示3D点云</span>
+                <label class="switch">
+                  <input type="checkbox" v-model="mapLayers.lidar">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <div class="layer-item">
                 <span>显示机器人</span>
                 <label class="switch">
                   <input type="checkbox" v-model="mapLayers.robot">
@@ -140,7 +148,8 @@ import NavigationControl from './components/NavigationControl.vue'
 
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
-const API_BASE = `http://${window.location.hostname}:3000/api`
+const BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || '3000'
+const API_BASE = `http://${window.location.hostname}:${BACKEND_PORT}/api`
 const DEFAULT_WS_URL = `ws://${window.location.hostname}:8765`
 
 const TOPIC_DEFAULTS = {
@@ -154,7 +163,8 @@ const TOPIC_DEFAULTS = {
   goal_pose: '/goal_pose',
   initial_pose: '/initialpose',
   navigate_feedback: '/navigate_to_pose/_action/feedback',
-  imu: '/imu'
+  imu: '/imu',
+  lidar: '/livox/lidar'
 }
 
 // ---- 建图状态 (跨组件共享) ----
@@ -178,6 +188,7 @@ const scanData = ref(null)
 const tfData = ref(null)
 const odomData = ref(null)
 const planData = ref(null)
+const lidarData = ref(null)
 
 // 导航反馈数据
 const navFeedback = ref(null)
@@ -188,10 +199,12 @@ const runtimeTopics = ref({ ...TOPIC_DEFAULTS })
 const mapLayers = ref({
   map: true,
   scan: true,
+  lidar: true,
   robot: true,
   path: true,
   goal: true
 })
+const sensorAutoLocked = ref(false)
 
 // ================= Foxglove 频道 ID ==================
 let cmdVelChannelId = null
@@ -207,6 +220,7 @@ let odomSubId = null
 let planSubId = null
 let feedbackSubId = null // 导航反馈订阅 ID
 let imuSubId = null
+let lidarSubId = null
 
 // ---- 计算属性 ----
 const connectionState = computed(() => foxglove.connectionState.value)
@@ -242,6 +256,7 @@ function clearAllData() {
   tfData.value = null
   odomData.value = null
   planData.value = null
+  lidarData.value = null
   navFeedback.value = null // 清除导航反馈数据
   imuData.value = null
   waypointQueue.value = []
@@ -262,6 +277,7 @@ function handleDisconnect() {
   planSubId = null
   feedbackSubId = null // 清除订阅 ID
   imuSubId = null
+  lidarSubId = null
   clearAllData()
 }
 
@@ -365,6 +381,13 @@ function onChannelsReady(event) {
   if (!imuSubId) {
     imuSubId = foxglove.subscribe(runtimeTopics.value.imu, (data) => {
       imuData.value = data
+    })
+  }
+
+  // 12. 订阅 点云 (Livox)
+  if (!lidarSubId) {
+    lidarSubId = foxglove.subscribe(runtimeTopics.value.lidar, (data) => {
+      lidarData.value = data
     })
   }
 }
@@ -479,6 +502,20 @@ function onInitialPoseSet({ x, y, yaw }) {
 
 watch(multiPointMode, (enabled) => {
   if (!enabled) clearWaypoints()
+})
+
+// 自动选择唯一可用传感器：只有 scan 或只有 lidar 时，自动显示对应图层
+watch([scanData, lidarData], ([scan, lidar]) => {
+  if (sensorAutoLocked.value) return
+  if (scan && !lidar) {
+    mapLayers.value.scan = true
+    mapLayers.value.lidar = false
+    sensorAutoLocked.value = true
+  } else if (lidar && !scan) {
+    mapLayers.value.lidar = true
+    mapLayers.value.scan = false
+    sensorAutoLocked.value = true
+  }
 })
 
 watch(navigationActive, (running) => {

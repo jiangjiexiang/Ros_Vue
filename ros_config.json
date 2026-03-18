@@ -63,6 +63,30 @@
         "save_dir": "/home/jiang/workspace/fishbot/maps"
     },
     "maps_dir": "/home/jiang/workspace/fishbot/maps",
+    "paths": {
+        "ros_setup": "/opt/ros/humble/setup.bash",
+        "fishbot_workspace": "/home/jiang/workspace/fishbot",
+        "extra_workspaces": [
+            "/home/jiang/workspace/ros2_humble_mid360_simulation"
+        ]
+    },
+    "ports": {
+        "backend": 3000,
+        "frontend": 5173
+    },
+    "node": {
+        "nvm_version": "v0.39.7",
+        "version": "lts/*"
+    },
+    "cleanup": {
+        "startup_regex": "gzserver|gzclient|gazebo|rviz2|ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2",
+        "shutdown_regex": "ros2|cartographer|foxglove|component_container_isolated|robot_state_publisher|nav2"
+    },
+    "env": {
+        "qt_x11_no_mitshm": "1",
+        "libgl_always_software": "0",
+        "gazebo_plugin_path_append": "/opt/ros/humble/lib"
+    },
     "topics": {
         "cmd_vel": "/cmd_vel",
         "battery": "/battery",
@@ -74,6 +98,7 @@
         "goal_pose": "/goal_pose",
         "initial_pose": "/initialpose",
         "navigate_feedback": "/navigate_to_pose/_action/feedback",
-        "imu": "/imu"
+        "imu": "/imu",
+        "lidar": "/livox/lidar"
     }
 }
