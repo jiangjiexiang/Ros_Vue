@@ -226,9 +226,12 @@ function animateReturn() {
 function startSendLoop() {
   if (sendTimer) return
   sendTimer = setInterval(() => {
-    const linearX = knobY.value * -maxLinearSpeed
-    const angularZ = knobX.value * -maxAngularSpeed
-    emit('velocity-change', { linearX, angularZ })
+    // 只有在拖拽中或数值不为 0 (回中动画中) 时才发送，避免空闲状态干扰键盘控制
+    if (isDragging || Math.abs(knobX.value) > 0.001 || Math.abs(knobY.value) > 0.001) {
+      const linearX = knobY.value * -maxLinearSpeed
+      const angularZ = knobX.value * -maxAngularSpeed
+      emit('velocity-change', { linearX, angularZ })
+    }
   }, sendRate)
 }
 

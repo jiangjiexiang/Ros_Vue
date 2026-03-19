@@ -136,6 +136,10 @@ const props = defineProps({
   layers: {
     type: Object,
     default: () => ({ map: true, scan: true, lidar: true, robot: true, path: true, goal: true })
+  },
+  sensorConfig: {
+    type: Object,
+    default: () => ({})
   }
 })
 
@@ -702,6 +706,10 @@ function quatToYaw(q) {
   return Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 }
 
+function yawToQuat(yaw) {
+  return { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) }
+}
+
 /** 组合两个 TF: parent->middle + middle->child = parent->child */
 function composeTf(tfA, tfB) {
   // tfA: parent -> middle,  tfB: middle -> child
@@ -725,12 +733,27 @@ function lookupTf(fromFrame, toFrame) {
   }
   
   // 两段路径: fromFrame -> middle -> toFrame
-  for (const key in tfTree) {
-    const [parent, child] = key.split('|')
-    if (parent === fromFrame) {
-      const secondKey = `${child}|${toFrame}`
-      if (tfTree[secondKey]) {
-        return composeTf(tfTree[key], tfTree[secondKey])
+  for (const keyA in tfTree) {
+    const [parentA, childA] = keyA.split('|')
+    if (parentA !== fromFrame) continue
+    const secondKey = `${childA}|${toFrame}`
+    if (tfTree[secondKey]) {
+      return composeTf(tfTree[keyA], tfTree[secondKey])
+    }
+  }
+  
+  // 三段路径: fromFrame -> mid1 -> mid2 -> toFrame
+  for (const keyA in tfTree) {
+    const [parentA, childA] = keyA.split('|')
+    if (parentA !== fromFrame) continue
+    for (const keyB in tfTree) {
+      const [parentB, childB] = keyB.split('|')
+      if (parentB !== childA) continue
+      const thirdKey = `${childB}|${toFrame}`
+      if (tfTree[thirdKey]) {
+        const mid = composeTf(tfTree[keyA], tfTree[keyB])
+        const tfMid = { translation: { x: mid.x, y: mid.y, z: 0 }, rotation: yawToQuat(mid.yaw) }
+        return composeTf(tfMid, tfTree[thirdKey])
       }
     }
   }
@@ -761,9 +784,15 @@ watch(() => props.tfData, (newData) => {
   }
 
   // 3. 寻找传感器偏移 (base_link -> laser/base_scan)
-  const scanFrame = props.scanData?.header?.frame_id || 'base_scan'
+  const configFrame = props.sensorConfig?.scan_frame
+  const scanFrame = configFrame || props.scanData?.header?.frame_id || 'base_scan'
   let sOffset = lookupTf('base_link', scanFrame)
   if (!sOffset) sOffset = lookupTf('base_footprint', scanFrame)
+  // 手动偏移回退: 如果 TF 查找失败且配置了 manual_offset 则使用它
+  if (!sOffset && props.sensorConfig?.manual_offset) {
+    const mo = props.sensorConfig.manual_offset
+    sOffset = { x: mo.x || 0, y: mo.y || 0, yaw: mo.yaw || 0 }
+  }
   if (sOffset) {
     sensorOffset.value = sOffset
   }

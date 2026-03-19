@@ -22,19 +22,41 @@
                     "min_qos_depth:=10"
                 ],
                 "delay": 0
+            },
+            {
+                "id": "bringup",
+                "description": "Yahboom 底层数据程序",
+                "command": "ros2",
+                "args": [
+                    "launch",
+                    "yahboomcar_bringup",
+                    "yahboomcar_bringup_launch.py"
+                ],
+                "delay": 2000
             }
         ],
         "mapping": [
             {
                 "id": "mapCartographer",
-                "description": "Cartographer 建图算法",
+                "description": "Cartographer 建图节点",
                 "command": "ros2",
                 "args": [
                     "launch",
-                    "fishbot_cartographer",
-                    "cartographer.launch.py"
+                    "yahboomcar_nav",
+                    "map_cartographer_launch.py"
                 ],
                 "delay": 0
+            },
+            {
+                "id": "mapDisplay",
+                "description": "建图可视化",
+                "command": "ros2",
+                "args": [
+                    "launch",
+                    "yahboomcar_nav",
+                    "display_launch.py"
+                ],
+                "delay": 3000
             }
         ],
         "navigation": [
@@ -65,7 +87,7 @@
     "maps_dir": "/home/jiang/workspace/fishbot/maps",
     "paths": {
         "ros_setup": "/opt/ros/humble/setup.bash",
-        "fishbot_workspace": "/home/jiang/workspace/fishbot",
+        "robot_workspace": "/home/jiang/workspace/fishbot",
         "extra_workspaces": [
             "/home/jiang/workspace/ros2_humble_mid360_simulation"
         ]
@@ -100,5 +122,10 @@
         "navigate_feedback": "/navigate_to_pose/_action/feedback",
         "imu": "/imu",
         "lidar": "/livox/lidar"
+    },
+    "sensor": {
+        "scan_frame": "base_scan",
+        "lidar_frame": "livox_frame",
+        "manual_offset": null
     }
 }

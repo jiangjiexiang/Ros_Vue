@@ -37,6 +37,7 @@
           :waypoints="waypointQueue"
           :activeWaypoint="activeWaypoint"
           :navFeedback="navFeedback"
+          :sensorConfig="sensorConfig"
           @goal-set="onGoalSet"
           @waypoint-add="onWaypointAdd"
           @waypoint-reached="onWaypointReached"
@@ -194,6 +195,7 @@ const lidarData = ref(null)
 const navFeedback = ref(null)
 const imuData = ref(null)
 const runtimeTopics = ref({ ...TOPIC_DEFAULTS })
+const sensorConfig = ref({})
 
 // ---- 图层控制 ----
 const mapLayers = ref({
@@ -286,9 +288,11 @@ async function loadRuntimeConfig() {
     const res = await fetch(`${API_BASE}/runtime_config`)
     const data = await res.json()
     runtimeTopics.value = { ...TOPIC_DEFAULTS, ...(data.topics || {}) }
+    sensorConfig.value = data.sensor || {}
   } catch (err) {
     console.warn('加载运行时配置失败，使用默认话题:', err)
     runtimeTopics.value = { ...TOPIC_DEFAULTS }
+    sensorConfig.value = {}
   }
 }
 

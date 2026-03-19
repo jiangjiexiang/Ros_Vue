@@ -47,9 +47,9 @@ function getRosSourceCommands(config) {
         sources.push(`[ -f ${shellQuote(paths.ros_setup)} ] && source ${shellQuote(paths.ros_setup)}`);
     }
 
-    if (paths.fishbot_workspace) {
-        const fishbotSetup = path.join(paths.fishbot_workspace, 'install/setup.bash');
-        sources.push(`[ -f ${shellQuote(fishbotSetup)} ] && source ${shellQuote(fishbotSetup)}`);
+    if (paths.robot_workspace) {
+        const robotSetup = path.join(paths.robot_workspace, 'install/setup.bash');
+        sources.push(`[ -f ${shellQuote(robotSetup)} ] && source ${shellQuote(robotSetup)}`);
     }
 
     if (Array.isArray(paths.extra_workspaces)) {
@@ -75,7 +75,8 @@ const port = getBackendPort();
 app.get('/api/runtime_config', (req, res) => {
     const config = loadConfig();
     res.json({
-        topics: config.topics || {}
+        topics: config.topics || {},
+        sensor: config.sensor || {}
     });
 });
 

@@ -71,9 +71,9 @@ PY
 }
 
 ROS_SETUP_DEFAULT="/opt/ros/humble/setup.bash"
-FISHBOT_WORKSPACE_DEFAULT="/home/jiang/workspace/fishbot"
+ROBOT_WORKSPACE_DEFAULT="/home/jiang/workspace/fishbot"
 ROS_SETUP_PATH="$(get_config_value "paths.ros_setup")"
-FISHBOT_WORKSPACE="$(get_config_value "paths.fishbot_workspace")"
+ROBOT_WORKSPACE="$(get_config_value "paths.robot_workspace")"
 EXTRA_WORKSPACES=()
 while IFS= read -r line; do
     EXTRA_WORKSPACES+=("$line")
@@ -88,7 +88,7 @@ QT_X11_NO_MITSHM_VALUE="$(get_config_value "env.qt_x11_no_mitshm")"
 LIBGL_ALWAYS_SOFTWARE_VALUE="$(get_config_value "env.libgl_always_software")"
 GAZEBO_PLUGIN_PATH_APPEND="$(get_config_value "env.gazebo_plugin_path_append")"
 if [ -z "$ROS_SETUP_PATH" ]; then ROS_SETUP_PATH="$ROS_SETUP_DEFAULT"; fi
-if [ -z "$FISHBOT_WORKSPACE" ]; then FISHBOT_WORKSPACE="$FISHBOT_WORKSPACE_DEFAULT"; fi
+if [ -z "$ROBOT_WORKSPACE" ]; then ROBOT_WORKSPACE="$ROBOT_WORKSPACE_DEFAULT"; fi
 if [ -z "$FRONTEND_PORT" ]; then FRONTEND_PORT="5173"; fi
 if [ -z "$BACKEND_PORT" ]; then BACKEND_PORT="3000"; fi
 if [ -z "$NVM_VERSION" ]; then NVM_VERSION="v0.39.7"; fi
@@ -150,12 +150,12 @@ if ! command -v ros2 &> /dev/null; then
     [ -f "$ROS_SETUP_PATH" ] && source "$ROS_SETUP_PATH"
 fi
 
-# 2.5 自动加载本地工作空间 (fishbot)
-if [ -f "$FISHBOT_WORKSPACE/install/setup.bash" ]; then
-    echo "发现 fishbot 工作空间，正在加载环境..."
-    source "$FISHBOT_WORKSPACE/install/setup.bash"
+# 2.5 自动加载本地工作空间
+if [ -f "$ROBOT_WORKSPACE/install/setup.bash" ]; then
+    echo "发现机器人工作空间，正在加载环境..."
+    source "$ROBOT_WORKSPACE/install/setup.bash"
 else
-    echo "警告: 未能在 $FISHBOT_WORKSPACE 找到安装环境，请确保已执行 colcon build"
+    echo "警告: 未能在 $ROBOT_WORKSPACE 找到安装环境，请确保已执行 colcon build"
 fi
 
 # 2.5.1 加载额外工作空间 (用于传感器/自定义消息)
