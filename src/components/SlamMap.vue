@@ -115,7 +115,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { API_BASE } from '../config.js'
 import UiIcon from './UiIcon.vue'
 
@@ -895,10 +895,9 @@ function onTouchMove(e) {
   }
 }
 
-// 监听窗口大小变化
-window.addEventListener('resize', () => {
+function handleResize() {
   draw()
-})
+}
 
 watch(shouldShowCanvas, (visible) => {
   if (visible) nextTick(() => {
@@ -977,6 +976,11 @@ watch(() => [props.isNavigating, props.multiPointMode], ([navigating, multi]) =>
 
 onMounted(() => {
   if (props.mapData) updateOffscreenCanvas(props.mapData)
+  window.addEventListener('resize', handleResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
 })
 
 defineExpose({

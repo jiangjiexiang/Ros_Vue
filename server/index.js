@@ -421,7 +421,12 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 const dist = path.join(projectRoot, 'dist');
-if (fs.existsSync(dist)) app.use(express.static(dist));
+if (fs.existsSync(dist)) {
+    app.use(express.static(dist));
+    app.get(/^(?!\/api(?:\/|$)).*/, (req, res) => {
+        res.sendFile(path.join(dist, 'index.html'));
+    });
+}
 
 app.listen(3000, '0.0.0.0', () => {
     console.log('后端已启动: http://localhost:3000');

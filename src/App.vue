@@ -1,42 +1,11 @@
 <template>
-  <div class="console-layout">
-    <header class="console-header">
-      <div class="brand">
-        <div class="brand-mark"><UiIcon name="robot" :size="25" /></div>
-        <div>
-          <div class="brand-title">机器人控制台</div>
-          <div class="brand-subtitle">ROS 2 · {{ activeRobot.name }}</div>
-        </div>
-      </div>
-
-      <nav class="view-nav">
-        <button :class="{ active: activeView === 'dashboard' }" @click="activeView = 'dashboard'">
-          <UiIcon name="activity" :size="16" />监控
-        </button>
-        <button :class="{ active: activeView === 'tasks' }" @click="activeView = 'tasks'">
-          <UiIcon name="map" :size="16" />任务
-        </button>
-        <button :class="{ active: activeView === 'robots' }" @click="activeView = 'robots'">
-          <UiIcon name="robot" :size="16" />机器人
-        </button>
-      </nav>
-
-      <div class="header-context">
-        <span class="environment-badge">ROS 2 · HUMBLE</span>
-        <span class="header-divider"></span>
-        <div class="header-mode">
-          <span>当前模式</span>
-          <strong>{{ modeText }}</strong>
-        </div>
-      </div>
-
-      <div class="header-connection" :class="connectionState">
-        <span class="status-dot" :class="connectionState"></span>
-        <span>{{ statusText }}</span>
-      </div>
-    </header>
-
-    <main v-if="activeView === 'dashboard'" class="console-body">
+  <AppShell
+    :robot-name="activeRobot.name"
+    :mode-text="modeText"
+    :connection-state="connectionState"
+    :status-text="statusText"
+  >
+    <main v-if="legacyView === 'monitor'" class="console-body">
       <aside class="left-panel panel-scroll">
         <ConnectionPanel
           :robots="robots"
@@ -107,7 +76,7 @@
         />
 
         <div class="workspace-footer">
-          <span><i class="legend-dot robot"></i>机器人位置</span>
+          <span><i class="legend-dot robot"></i>机器狗位置</span>
           <span><i class="legend-dot scan"></i>激光扫描</span>
           <span><i class="legend-dot path"></i>规划路径</span>
           <span class="workspace-tip">滚轮缩放 · 拖动平移 · 双击设置目标</span>
@@ -144,7 +113,7 @@
       </aside>
     </main>
 
-    <main v-else-if="activeView === 'tasks'" class="task-page">
+    <main v-else-if="legacyView === 'maps'" class="task-page">
       <nav class="task-tabs">
         <button :class="{ active: activeOperation === 'mapping' }" @click="activeOperation = 'mapping'">
           <UiIcon name="map" :size="19" />
@@ -212,12 +181,10 @@
         />
       </div>
 
-      <section v-else class="card task-map-manager">
-        <MapManager @changed="mapsRevision++" @select="selectScene" />
-      </section>
+      <MapsPage v-else @changed="mapsRevision++" @select="selectScene" />
     </main>
 
-    <main v-else class="robots-page">
+    <main v-else-if="legacyView === 'robots'" class="robots-page">
       <RobotManager
         :robots="robots"
         :activeRobotId="activeRobotId"
@@ -228,11 +195,15 @@
         @switch="switchRobot"
       />
     </main>
-  </div>
+
+    <RouterView v-else />
+  </AppShell>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import AppShell from './layout/AppShell.vue'
 import { useFoxglove } from './composables/useFoxglove.js'
 import { API_BASE, DEFAULT_WS_URL } from './config.js'
 import JoystickControl from './components/JoystickControl.vue'
@@ -242,7 +213,7 @@ import ConnectionPanel from './components/ConnectionPanel.vue'
 import TelemetryPanel from './components/TelemetryPanel.vue'
 import MappingControl from './components/MappingControl.vue'
 import NavigationControl from './components/NavigationControl.vue'
-import MapManager from './components/MapManager.vue'
+import MapsPage from './features/maps/MapsPage.vue'
 import RobotManager from './components/RobotManager.vue'
 import UiIcon from './components/UiIcon.vue'
 
@@ -251,22 +222,24 @@ function loadRobots() {
     const saved = JSON.parse(localStorage.getItem('robot-console-robots'))
     if (Array.isArray(saved) && saved.length && saved.every((robot) => robot.id && robot.name && robot.url)) return saved
   } catch {}
-  return [{ id: 'robot-1', name: '机器人 1', url: DEFAULT_WS_URL, namespace: '' }]
+  return [{ id: 'robot-1', name: '机器狗 1', url: DEFAULT_WS_URL, namespace: '' }]
 }
 
-const activeView = ref('dashboard')
+const route = useRoute()
+const router = useRouter()
+const legacyView = computed(() => route.meta.legacyView || '')
 const robots = ref(loadRobots())
 const activeRobotId = ref(robots.value[0].id)
 const activeRobot = computed(() => robots.value.find((robot) => robot.id === activeRobotId.value) || robots.value[0])
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
-const activeOperation = ref('mapping')
+const activeOperation = ref('maps')
 const mapsRevision = ref(0)
 const selectedScenePath = ref('')
 const layerOptions = [
   { key: 'map', label: '地图' },
   { key: 'scan', label: '激光' },
-  { key: 'robot', label: '机器人' },
+  { key: 'robot', label: '机器狗' },
   { key: 'path', label: '路径' },
   { key: 'goal', label: '目标' }
 ]
@@ -394,13 +367,13 @@ function persistRobots() {
 
 function switchRobot(robot) {
   if (robot.id === activeRobotId.value) {
-    activeView.value = 'dashboard'
+    router.push('/monitor')
     return
   }
   handleDisconnect()
   activeRobotId.value = robot.id
   persistRobots()
-  activeView.value = 'dashboard'
+  router.push('/monitor')
   nextTick(() => handleConnect(robot.url))
 }
 
@@ -440,7 +413,7 @@ function removeRobot(id) {
 function selectScene(map) {
   selectedScenePath.value = map.path
   activeOperation.value = 'navigation'
-  activeView.value = 'tasks'
+  router.push('/maps')
 }
 
 function onMappingStarted() {
@@ -464,9 +437,7 @@ function clearAllData() {
   topics.value = []
 }
 
-function handleDisconnect() {
-  onStopMotion()
-  foxglove.disconnect()
+function clearConnectionState() {
   cmdVelChannelId = null
   goalPoseChannelId = null
   initialPoseChannelId = null
@@ -476,9 +447,15 @@ function handleDisconnect() {
   tfSubId = null
   odomSubId = null
   planSubId = null
-  feedbackSubId = null // 清除订阅 ID
+  feedbackSubId = null
   imuSubId = null
   clearAllData()
+}
+
+function handleDisconnect() {
+  onStopMotion()
+  foxglove.disconnect()
+  clearConnectionState()
 }
 
 async function loadRuntimeConfig() {
@@ -695,6 +672,16 @@ function onInitialPoseSet({ x, y, yaw }) {
 
 watch(multiPointMode, (enabled) => {
   if (!enabled) clearWaypoints()
+})
+
+watch(connectionState, (current, previous) => {
+  if (previous === 'connected' && current !== 'connected' && current !== 'connecting') {
+    clearConnectionState()
+  }
+})
+
+watch(() => route.path, (current, previous) => {
+  if (previous === '/monitor' && current !== '/monitor') onStopMotion()
 })
 
 watch(navigationActive, (running) => {

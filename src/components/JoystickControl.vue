@@ -39,7 +39,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({ connected: Boolean })
@@ -244,8 +244,19 @@ onMounted(() => {
   if (props.connected) startSendLoop()
 })
 
+onActivated(() => {
+  if (props.connected) startSendLoop()
+  draw()
+})
+
+onDeactivated(() => {
+  stopSendLoop()
+  stopMotion()
+})
+
 onUnmounted(() => {
   stopSendLoop()
+  stopMotion()
   removePointerListeners()
   if (animationId) cancelAnimationFrame(animationId)
 })
