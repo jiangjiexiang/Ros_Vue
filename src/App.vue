@@ -147,6 +147,13 @@
               <UiIcon name="route" :size="16" />导航
               <i v-if="navigationActive"></i>
             </button>
+            <button
+              :class="{ active: activeOperation === 'maps' }"
+              role="tab"
+              @click="activeOperation = 'maps'"
+            >
+              <UiIcon name="layers" :size="16" />地图
+            </button>
           </div>
 
           <MappingControl
@@ -158,12 +165,19 @@
           <NavigationControl
             v-show="activeOperation === 'navigation'"
             :connected="isConnected"
+            :mapsRevision="mapsRevision"
+            v-model:selectedMap="selectedScenePath"
             v-model:isNavigating="navigationActive"
             v-model:isSettingPose="isSettingPose"
             v-model:multiPointMode="multiPointMode"
             :waypointCount="waypointQueue.length + (activeWaypoint ? 1 : 0)"
             @navigationStarted="activeOperation = 'navigation'"
             @clear-waypoints="clearWaypoints"
+          />
+          <MapManager
+            v-show="activeOperation === 'maps'"
+            @changed="mapsRevision++"
+            @select="selectScene"
           />
         </section>
 
@@ -198,11 +212,14 @@ import ConnectionPanel from './components/ConnectionPanel.vue'
 import TelemetryPanel from './components/TelemetryPanel.vue'
 import MappingControl from './components/MappingControl.vue'
 import NavigationControl from './components/NavigationControl.vue'
+import MapManager from './components/MapManager.vue'
 import UiIcon from './components/UiIcon.vue'
 
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
 const activeOperation = ref('mapping')
+const mapsRevision = ref(0)
+const selectedScenePath = ref('')
 const layerOptions = [
   { key: 'map', label: '地图' },
   { key: 'scan', label: '激光' },
@@ -309,6 +326,11 @@ const statusText = computed(() => {
 function handleConnect(url = DEFAULT_WS_URL) {
   if (connectionState.value === 'connected' || connectionState.value === 'connecting') return
   foxglove.connect(url)
+}
+
+function selectScene(map) {
+  selectedScenePath.value = map.path
+  activeOperation.value = 'navigation'
 }
 
 function onMappingStarted() {

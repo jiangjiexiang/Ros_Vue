@@ -72,16 +72,18 @@ const props = defineProps({
   connected: Boolean,
   isNavigating: Boolean,
   isSettingPose: Boolean,
+  selectedMap: { type: String, default: '' },
   multiPointMode: { type: Boolean, default: false },
-  waypointCount: { type: Number, default: 0 }
+  waypointCount: { type: Number, default: 0 },
+  mapsRevision: { type: Number, default: 0 }
 })
 
-const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'navigationStarted', 'clear-waypoints'])
+const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'update:selectedMap', 'navigationStarted', 'clear-waypoints'])
 const isNavigating = ref(props.isNavigating)
 const isLoading = ref(false)
 const errorMsg = ref('')
 const maps = ref([])
-const selectedMap = ref('')
+const selectedMap = ref(props.selectedMap)
 const isSettingPose = ref(props.isSettingPose)
 const multiPointMode = ref(props.multiPointMode)
 let statusTimer = null
@@ -98,9 +100,8 @@ async function loadMaps() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     maps.value = data.maps || []
-    if (maps.value.length > 0 && !selectedMap.value) {
-      selectedMap.value = maps.value[maps.value.length - 1].path
-    }
+    const selectionExists = maps.value.some((map) => map.path === selectedMap.value)
+    if (!selectionExists) selectedMap.value = maps.value[0]?.path || ''
   } catch (err) {
     console.error('加载地图列表失败:', err)
     errorMsg.value = '无法加载地图列表'
@@ -191,6 +192,9 @@ function clearWaypoints() {
 watch(() => props.multiPointMode, (value) => { multiPointMode.value = value })
 watch(() => props.isNavigating, (value) => { isNavigating.value = value })
 watch(() => props.isSettingPose, (value) => { isSettingPose.value = value })
+watch(() => props.mapsRevision, loadMaps)
+watch(selectedMap, (value) => emit('update:selectedMap', value))
+watch(() => props.selectedMap, (value) => { selectedMap.value = value })
 
 onMounted(async () => {
   await loadMaps()
