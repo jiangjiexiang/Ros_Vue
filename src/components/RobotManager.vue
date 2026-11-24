@@ -21,7 +21,7 @@
           </div>
         </div>
         <dl>
-          <div><dt>WebSocket</dt><dd>{{ robot.url }}</dd></div>
+          <div><dt>地址</dt><dd>{{ displayAddress(robot.url) }}</dd></div>
           <div><dt>命名空间</dt><dd>{{ robot.namespace || '无' }}</dd></div>
         </dl>
         <div class="robot-card-actions">
@@ -36,11 +36,12 @@
     <section class="add-robot-card">
       <div>
         <h2>添加机器人</h2>
-        <p>不同机器人可以使用不同 WebSocket，也可以通过命名空间区分话题。</p>
+        <p>不同机器人可以通过局域网 IP 或主机名连接，也可以使用命名空间区分话题。</p>
       </div>
       <form @submit.prevent="add">
         <label>名称<input v-model.trim="form.name" required placeholder="例如：巡检机器人 2"></label>
-        <label>WebSocket<input v-model.trim="form.url" required placeholder="ws://192.168.1.20:8765"></label>
+        <label>局域网 IP / 主机名<input v-model.trim="form.host" required placeholder="192.168.1.20"></label>
+        <label>端口<input v-model.trim="form.port" type="number" min="1" max="65535" required></label>
         <label>命名空间<input v-model.trim="form.namespace" placeholder="可选，例如 robot2"></label>
         <button type="submit">添加并连接</button>
       </form>
@@ -61,7 +62,7 @@ const props = defineProps({
   connectionState: { type: String, default: 'disconnected' }
 })
 const emit = defineEmits(['add', 'remove', 'switch'])
-const form = reactive({ name: '', url: 'ws://', namespace: '' })
+const form = reactive({ name: '', host: '', port: '8765', namespace: '' })
 const errorMsg = ref('')
 const stateText = computed(() => ({
   connected: '已连接', connecting: '连接中', error: '连接异常'
@@ -69,18 +70,30 @@ const stateText = computed(() => ({
 
 function add() {
   errorMsg.value = ''
-  if (!/^wss?:\/\/.+/.test(form.url)) {
-    errorMsg.value = 'WebSocket 地址应以 ws:// 或 wss:// 开头'
+  const portNumber = Number(form.port)
+  if (!form.host || !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+    errorMsg.value = '请输入有效的机器人 IP 和端口'
     return
   }
+  const host = form.host.includes(':') && !form.host.startsWith('[') ? `[${form.host}]` : form.host
   emit('add', {
     name: form.name.trim(),
-    url: form.url.trim(),
+    url: `ws://${host}:${portNumber}`,
     namespace: form.namespace.trim().replace(/^\/+|\/+$/g, '')
   })
   form.name = ''
-  form.url = 'ws://'
+  form.host = ''
+  form.port = '8765'
   form.namespace = ''
+}
+
+function displayAddress(value) {
+  try {
+    const url = new URL(value)
+    return `${url.hostname}:${url.port || '8765'}`
+  } catch {
+    return value
+  }
 }
 
 function remove(robot) {
@@ -114,7 +127,7 @@ dd { overflow: hidden; color: var(--text-secondary); font-family: var(--font-mon
 .add-robot-card { margin-top: 20px; padding: 18px; border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: var(--bg-card); }
 .add-robot-card h2 { font-size: 0.9rem; }
 .add-robot-card p { margin-top: 6px; color: var(--text-muted); font-size: 0.7rem; }
-.add-robot-card form { display: grid; grid-template-columns: 1fr 1.5fr 1fr auto; gap: 10px; align-items: end; margin-top: 16px; }
+.add-robot-card form { display: grid; grid-template-columns: 1fr 1.4fr 80px 1fr auto; gap: 10px; align-items: end; margin-top: 16px; }
 .add-robot-card label { color: var(--text-muted); font-size: 0.65rem; }
 .add-robot-card input { display: block; width: 100%; height: 35px; margin-top: 6px; padding: 0 9px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-primary); background: var(--bg-secondary); font-size: 0.7rem; }
 .add-robot-card .error-message { margin-top: 12px; }
