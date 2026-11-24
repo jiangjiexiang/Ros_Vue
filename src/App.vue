@@ -30,16 +30,10 @@
         </div>
       </div>
 
-      <button
-        class="header-connection"
-        :class="connectionState"
-        :disabled="connectionState === 'connecting'"
-        @click="isConnected ? handleDisconnect() : handleConnect()"
-      >
+      <div class="header-connection" :class="connectionState">
         <span class="status-dot" :class="connectionState"></span>
         <span>{{ statusText }}</span>
-        <UiIcon name="link" :size="16" />
-      </button>
+      </div>
     </header>
 
     <main v-if="activeView === 'dashboard'" class="console-body">
@@ -50,7 +44,6 @@
           :connectionState="connectionState"
           :errorMessage="errorMessage"
           @connect="connectRobot"
-          @disconnect="handleDisconnect"
         />
 
         <JoystickControl

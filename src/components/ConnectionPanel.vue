@@ -16,7 +16,12 @@
 
       <label>
         <span class="field-label">控制对象</span>
-        <select v-model="selectedRobotId" class="robot-select" :disabled="locked">
+        <select
+          v-model="selectedRobotId"
+          class="robot-select"
+          :disabled="connectionState === 'connecting'"
+          @change="selectRobot"
+        >
           <option v-for="robot in robots" :key="robot.id" :value="robot.id">{{ robot.name }}</option>
         </select>
       </label>
@@ -25,19 +30,6 @@
         <span>{{ displayAddress(selectedRobot.url) }}</span>
         <span>{{ selectedRobot.namespace ? `命名空间 ${selectedRobot.namespace}` : '无命名空间' }}</span>
       </div>
-
-      <button
-        v-if="!isConnected"
-        class="btn btn-connect"
-        :disabled="locked || !selectedRobot"
-        @click="connect"
-      >
-        <UiIcon name="link" :size="16" />
-        {{ connectionState === 'connecting' ? '正在连接…' : '连接机器人' }}
-      </button>
-      <button v-else class="btn btn-disconnect" @click="$emit('disconnect')">
-        <UiIcon name="link" :size="16" />断开连接
-      </button>
 
       <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
     </div>
@@ -54,10 +46,8 @@ const props = defineProps({
   connectionState: String,
   errorMessage: String
 })
-const emit = defineEmits(['connect', 'disconnect'])
+const emit = defineEmits(['connect'])
 const selectedRobotId = ref(props.activeRobotId)
-const isConnected = computed(() => props.connectionState === 'connected')
-const locked = computed(() => isConnected.value || props.connectionState === 'connecting')
 const selectedRobot = computed(() => props.robots.find((robot) => robot.id === selectedRobotId.value))
 const statusLabel = computed(() => ({
   connected: '在线', connecting: '连接中', error: '连接异常'
@@ -74,7 +64,7 @@ function displayAddress(value) {
   }
 }
 
-function connect() {
+function selectRobot() {
   if (selectedRobot.value) emit('connect', selectedRobot.value)
 }
 </script>

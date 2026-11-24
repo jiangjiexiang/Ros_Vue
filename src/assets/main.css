@@ -176,13 +176,7 @@ button:disabled, input:disabled, select:disabled {
   border-radius: 9px;
   color: var(--text-secondary);
   background: var(--bg-soft);
-  cursor: pointer;
-  transition: var(--transition);
-}
-
-.header-connection:hover:not(:disabled) {
-  border-color: rgba(34, 211, 238, 0.38);
-  color: var(--text-primary);
+  cursor: default;
 }
 
 .header-connection.connected {
