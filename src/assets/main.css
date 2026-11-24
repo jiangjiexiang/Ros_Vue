@@ -872,3 +872,133 @@ kbd {
     transition-duration: 0.01ms !important;
   }
 }
+
+.view-nav {
+  display: flex;
+  gap: 4px;
+  margin-left: 30px;
+  padding: 4px;
+  border-radius: 9px;
+  background: rgba(148, 163, 184, 0.05);
+}
+
+.view-nav button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.view-nav button.active {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.view-nav button.active svg { color: var(--accent-primary); }
+
+.task-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  padding: 18px;
+  overflow: auto;
+}
+
+.task-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.task-tabs button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 68px;
+  padding: 12px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-tabs button.active {
+  border-color: rgba(34, 211, 238, 0.3);
+  background: rgba(34, 211, 238, 0.05);
+}
+
+.task-tabs button > svg { color: var(--accent-primary); flex: 0 0 auto; }
+.task-tabs button span { display: flex; flex-direction: column; gap: 5px; }
+.task-tabs button strong { color: var(--text-primary); font-size: 0.8rem; font-weight: 600; }
+.task-tabs button small { color: var(--text-muted); font-size: 0.65rem; }
+.task-tabs button > i { position: absolute; top: 10px; right: 10px; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+
+.task-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 16px;
+  flex: 1;
+  min-height: 620px;
+}
+
+.task-control-panel { align-self: start; }
+.task-control-panel .operations-heading { border-bottom: 1px solid var(--border-color); }
+.task-control-panel .operations-heading h2 { font-size: 0.85rem; }
+.task-layout > .map-card { min-height: 620px; }
+
+.task-map-manager {
+  width: min(1100px, 100%);
+  margin: 0 auto;
+  align-self: start;
+}
+
+.task-map-manager .control-section { padding: 20px; }
+.task-map-manager .map-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  max-height: none;
+}
+.task-map-manager .map-row { padding: 15px; }
+.task-map-manager .manager-note { margin-top: 16px; }
+
+.robots-page {
+  min-height: 0;
+  padding: 24px;
+  overflow: auto;
+}
+
+@media (max-width: 1100px) {
+  .view-nav { margin-left: 14px; }
+  .view-nav button { padding: 0 8px; }
+  .task-layout { grid-template-columns: 270px minmax(0, 1fr); }
+}
+
+@media (max-width: 860px) {
+  .view-nav { margin-left: auto; margin-right: 12px; }
+  .header-connection { margin-left: 0; }
+  .task-page, .robots-page { min-height: calc(100dvh - 62px); padding: 12px; }
+  .task-layout { grid-template-columns: 1fr; }
+  .task-control-panel { width: 100%; }
+  .task-layout > .map-card { min-height: 520px; }
+}
+
+@media (max-width: 560px) {
+  .view-nav { gap: 2px; margin-right: 8px; padding: 2px; }
+  .view-nav button { width: 31px; padding: 0; justify-content: center; gap: 0; font-size: 0; }
+  .task-tabs { gap: 7px; }
+  .task-tabs button { justify-content: center; min-height: 48px; padding: 8px; }
+  .task-tabs button span { display: none; }
+  .task-map-manager .map-list { grid-template-columns: 1fr; }
+}

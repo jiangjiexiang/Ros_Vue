@@ -5,9 +5,21 @@
         <div class="brand-mark"><UiIcon name="robot" :size="25" /></div>
         <div>
           <div class="brand-title">机器人控制台</div>
-          <div class="brand-subtitle">ROS 2 控制与监控</div>
+          <div class="brand-subtitle">ROS 2 · {{ activeRobot.name }}</div>
         </div>
       </div>
+
+      <nav class="view-nav">
+        <button :class="{ active: activeView === 'dashboard' }" @click="activeView = 'dashboard'">
+          <UiIcon name="activity" :size="16" />监控
+        </button>
+        <button :class="{ active: activeView === 'tasks' }" @click="activeView = 'tasks'">
+          <UiIcon name="map" :size="16" />任务
+        </button>
+        <button :class="{ active: activeView === 'robots' }" @click="activeView = 'robots'">
+          <UiIcon name="robot" :size="16" />机器人
+        </button>
+      </nav>
 
       <div class="header-context">
         <span class="environment-badge">ROS 2 · HUMBLE</span>
@@ -30,12 +42,12 @@
       </button>
     </header>
 
-    <main class="console-body">
+    <main v-if="activeView === 'dashboard'" class="console-body">
       <aside class="left-panel panel-scroll">
         <ConnectionPanel
           :connectionState="connectionState"
           :errorMessage="errorMessage"
-          :defaultUrl="DEFAULT_WS_URL"
+          :defaultUrl="activeRobot.url"
           @connect="handleConnect"
           @disconnect="handleDisconnect"
         />
@@ -120,42 +132,50 @@
           :odomData="odomData"
         />
 
-        <section class="card operations-card">
-          <div class="operations-heading">
-            <div>
-              <h2>任务控制</h2>
+        <section class="card layer-card">
+          <div class="card-header">
+            <span><UiIcon name="layers" :size="17" />地图图层</span>
+            <small>{{ Object.values(mapLayers).filter(Boolean).length }}/5</small>
+          </div>
+          <div class="card-body">
+            <div class="layer-controls">
+              <label v-for="layer in layerOptions" :key="layer.key" class="layer-chip" :class="layer.key">
+                <input type="checkbox" v-model="mapLayers[layer.key]">
+                <span class="layer-check"></span>
+                <span>{{ layer.label }}</span>
+              </label>
             </div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <main v-else-if="activeView === 'tasks'" class="task-page">
+      <nav class="task-tabs">
+        <button :class="{ active: activeOperation === 'mapping' }" @click="activeOperation = 'mapping'">
+          <UiIcon name="map" :size="19" />
+          <span><strong>建图任务</strong><small>启动 SLAM 并保存环境地图</small></span>
+          <i v-if="mappingActive"></i>
+        </button>
+        <button :class="{ active: activeOperation === 'navigation' }" @click="activeOperation = 'navigation'">
+          <UiIcon name="route" :size="19" />
+          <span><strong>导航任务</strong><small>选择场景、定位并设置目标</small></span>
+          <i v-if="navigationActive"></i>
+        </button>
+        <button :class="{ active: activeOperation === 'maps' }" @click="activeOperation = 'maps'">
+          <UiIcon name="layers" :size="19" />
+          <span><strong>地图与场景</strong><small>编辑栅格、切换和管理场景</small></span>
+        </button>
+      </nav>
+
+      <div v-if="activeOperation !== 'maps'" class="task-layout">
+        <section class="card task-control-panel">
+          <div class="operations-heading">
+            <h2>{{ activeOperation === 'mapping' ? '建图任务' : '导航任务' }}</h2>
             <span class="operation-state" :class="{ active: mappingActive || navigationActive }">
               {{ mappingActive ? '建图中' : navigationActive ? '导航中' : '待机' }}
             </span>
           </div>
-
-          <div class="operation-tabs" role="tablist">
-            <button
-              :class="{ active: activeOperation === 'mapping' }"
-              role="tab"
-              @click="activeOperation = 'mapping'"
-            >
-              <UiIcon name="map" :size="16" />建图
-              <i v-if="mappingActive"></i>
-            </button>
-            <button
-              :class="{ active: activeOperation === 'navigation' }"
-              role="tab"
-              @click="activeOperation = 'navigation'"
-            >
-              <UiIcon name="route" :size="16" />导航
-              <i v-if="navigationActive"></i>
-            </button>
-            <button
-              :class="{ active: activeOperation === 'maps' }"
-              role="tab"
-              @click="activeOperation = 'maps'"
-            >
-              <UiIcon name="layers" :size="16" />地图
-            </button>
-          </div>
-
           <MappingControl
             v-show="activeOperation === 'mapping'"
             :connected="isConnected"
@@ -174,35 +194,50 @@
             @navigationStarted="activeOperation = 'navigation'"
             @clear-waypoints="clearWaypoints"
           />
-          <MapManager
-            v-show="activeOperation === 'maps'"
-            @changed="mapsRevision++"
-            @select="selectScene"
-          />
         </section>
 
-        <section class="card layer-card">
-          <div class="card-header">
-            <span><UiIcon name="layers" :size="17" />地图图层</span>
-            <small>{{ Object.values(mapLayers).filter(Boolean).length }}/5</small>
-          </div>
-          <div class="card-body">
-            <div class="layer-controls">
-              <label v-for="layer in layerOptions" :key="layer.key" class="layer-chip" :class="layer.key">
-                <input type="checkbox" v-model="mapLayers[layer.key]">
-                <span class="layer-check"></span>
-                <span>{{ layer.label }}</span>
-              </label>
-            </div>
-          </div>
-        </section>
-      </aside>
+        <SlamMap
+          ref="slamMapRef"
+          :connected="isConnected"
+          :mapData="mapData"
+          :scanData="scanData"
+          :tfData="tfData"
+          :planData="planData"
+          :layers="mapLayers"
+          :isMapping="mappingActive"
+          :isNavigating="navigationActive"
+          v-model:isSettingPose="isSettingPose"
+          :multiPointMode="multiPointMode"
+          :waypoints="waypointQueue"
+          :activeWaypoint="activeWaypoint"
+          :navFeedback="navFeedback"
+          @goal-set="onGoalSet"
+          @waypoint-add="onWaypointAdd"
+          @waypoint-reached="onWaypointReached"
+          @initial-pose-set="onInitialPoseSet"
+        />
+      </div>
+
+      <section v-else class="card task-map-manager">
+        <MapManager @changed="mapsRevision++" @select="selectScene" />
+      </section>
+    </main>
+
+    <main v-else class="robots-page">
+      <RobotManager
+        :robots="robots"
+        :activeRobotId="activeRobotId"
+        :connectionState="connectionState"
+        @add="addRobot"
+        @remove="removeRobot"
+        @switch="switchRobot"
+      />
     </main>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useFoxglove } from './composables/useFoxglove.js'
 import { API_BASE, DEFAULT_WS_URL } from './config.js'
 import JoystickControl from './components/JoystickControl.vue'
@@ -213,8 +248,21 @@ import TelemetryPanel from './components/TelemetryPanel.vue'
 import MappingControl from './components/MappingControl.vue'
 import NavigationControl from './components/NavigationControl.vue'
 import MapManager from './components/MapManager.vue'
+import RobotManager from './components/RobotManager.vue'
 import UiIcon from './components/UiIcon.vue'
 
+function loadRobots() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('robot-console-robots'))
+    if (Array.isArray(saved) && saved.length && saved.every((robot) => robot.id && robot.name && robot.url)) return saved
+  } catch {}
+  return [{ id: 'robot-1', name: '机器人 1', url: DEFAULT_WS_URL, namespace: '' }]
+}
+
+const activeView = ref('dashboard')
+const robots = ref(loadRobots())
+const activeRobotId = ref(robots.value[0].id)
+const activeRobot = computed(() => robots.value.find((robot) => robot.id === activeRobotId.value) || robots.value[0])
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
 const activeOperation = ref('mapping')
@@ -268,6 +316,13 @@ const planData = ref(null)
 const navFeedback = ref(null)
 const imuData = ref(null)
 const runtimeTopics = ref({ ...TOPIC_DEFAULTS })
+const robotTopics = computed(() => {
+  const namespace = activeRobot.value?.namespace?.replace(/^\/+|\/+$/g, '')
+  return Object.fromEntries(Object.entries(runtimeTopics.value).map(([key, topic]) => {
+    if (!namespace || !topic) return [key, topic]
+    return [key, `/${namespace}/${topic.replace(/^\/+/, '')}`]
+  }))
+})
 
 // ---- 图层控制 ----
 const mapLayers = ref({
@@ -323,14 +378,58 @@ const statusText = computed(() => {
 })
 
 // ---- 事件处理 ----
-function handleConnect(url = DEFAULT_WS_URL) {
+function handleConnect(url) {
   if (connectionState.value === 'connected' || connectionState.value === 'connecting') return
-  foxglove.connect(url)
+  const targetUrl = url || activeRobot.value?.url || DEFAULT_WS_URL
+  if (activeRobot.value) {
+    activeRobot.value.url = targetUrl
+    persistRobots()
+  }
+  foxglove.connect(targetUrl)
+}
+
+function persistRobots() {
+  localStorage.setItem('robot-console-robots', JSON.stringify(robots.value))
+}
+
+function switchRobot(robot) {
+  if (robot.id === activeRobotId.value) {
+    activeView.value = 'dashboard'
+    return
+  }
+  handleDisconnect()
+  activeRobotId.value = robot.id
+  persistRobots()
+  activeView.value = 'dashboard'
+  nextTick(() => handleConnect(robot.url))
+}
+
+function addRobot(config) {
+  const robot = {
+    ...config,
+    id: globalThis.crypto?.randomUUID?.() || `robot-${Date.now()}`
+  }
+  robots.value.push(robot)
+  persistRobots()
+  switchRobot(robot)
+}
+
+function removeRobot(id) {
+  if (robots.value.length <= 1) return
+  const wasActive = id === activeRobotId.value
+  robots.value = robots.value.filter((robot) => robot.id !== id)
+  if (wasActive) {
+    handleDisconnect()
+    activeRobotId.value = robots.value[0].id
+    nextTick(() => handleConnect(activeRobot.value.url))
+  }
+  persistRobots()
 }
 
 function selectScene(map) {
   selectedScenePath.value = map.path
   activeOperation.value = 'navigation'
+  activeView.value = 'tasks'
 }
 
 function onMappingStarted() {
@@ -394,12 +493,12 @@ function onChannelsReady(event) {
 
   // 1. 声明 /cmd_vel 发布频道
   if (!cmdVelChannelId) {
-    cmdVelChannelId = foxglove.clientAdvertise(runtimeTopics.value.cmd_vel, 'geometry_msgs/Twist', 'json')
+    cmdVelChannelId = foxglove.clientAdvertise(robotTopics.value.cmd_vel, 'geometry_msgs/Twist', 'json')
   }
 
   // 2. 订阅 /battery (电压值，单位可能是 0.1V)
   if (!batterySubId) {
-    batterySubId = foxglove.subscribe(runtimeTopics.value.battery, (data) => {
+    batterySubId = foxglove.subscribe(robotTopics.value.battery, (data) => {
       // std_msgs/msg/UInt16 → data 字段
       if (data.data !== undefined) {
         batteryVoltage.value = (data.data / 10).toFixed(1)
@@ -417,59 +516,59 @@ function onChannelsReady(event) {
 
   // 3. 订阅 /map
   if (!mapSubId) {
-    mapSubId = foxglove.subscribe(runtimeTopics.value.map, (data) => {
+    mapSubId = foxglove.subscribe(robotTopics.value.map, (data) => {
       mapData.value = data
     })
   }
 
   // 4. 订阅 /scan
   if (!scanSubId) {
-    scanSubId = foxglove.subscribe(runtimeTopics.value.scan, (data) => {
+    scanSubId = foxglove.subscribe(robotTopics.value.scan, (data) => {
       scanData.value = data
     })
   }
 
   // 5. 订阅 /tf
   if (!tfSubId) {
-    tfSubId = foxglove.subscribe(runtimeTopics.value.tf, (data) => {
+    tfSubId = foxglove.subscribe(robotTopics.value.tf, (data) => {
       tfData.value = data
     })
   }
 
   // 6. 订阅 /odom
   if (!odomSubId) {
-    odomSubId = foxglove.subscribe(runtimeTopics.value.odom, (data) => {
+    odomSubId = foxglove.subscribe(robotTopics.value.odom, (data) => {
       odomData.value = data
     })
   }
 
   // 7. 声明 /goal_pose 发布频道
   if (!goalPoseChannelId) {
-    goalPoseChannelId = foxglove.clientAdvertise(runtimeTopics.value.goal_pose, 'geometry_msgs/PoseStamped', 'json')
+    goalPoseChannelId = foxglove.clientAdvertise(robotTopics.value.goal_pose, 'geometry_msgs/PoseStamped', 'json')
   }
 
   // 8. 订阅 /plan (导航路径)
   if (!planSubId) {
-    planSubId = foxglove.subscribe(runtimeTopics.value.plan, (data) => {
+    planSubId = foxglove.subscribe(robotTopics.value.plan, (data) => {
       planData.value = data
     })
   }
 
   // 9. 声明 /initialpose 发布频道
   if (!initialPoseChannelId) {
-    initialPoseChannelId = foxglove.clientAdvertise(runtimeTopics.value.initial_pose, 'geometry_msgs/PoseWithCovarianceStamped', 'json')
+    initialPoseChannelId = foxglove.clientAdvertise(robotTopics.value.initial_pose, 'geometry_msgs/PoseWithCovarianceStamped', 'json')
   }
 
   // 10. 订阅导航反馈 (距离与预计时间)
   if (!feedbackSubId) {
-    feedbackSubId = foxglove.subscribe(runtimeTopics.value.navigate_feedback, (data) => {
+    feedbackSubId = foxglove.subscribe(robotTopics.value.navigate_feedback, (data) => {
       navFeedback.value = normalizeNavFeedback(data)
     })
   }
 
   // 11. 订阅 IMU（可配置，当前仅缓存数据）
   if (!imuSubId) {
-    imuSubId = foxglove.subscribe(runtimeTopics.value.imu, (data) => {
+    imuSubId = foxglove.subscribe(robotTopics.value.imu, (data) => {
       imuData.value = data
     })
   }
