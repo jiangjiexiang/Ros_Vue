@@ -1,66 +1,51 @@
 <template>
-  <div class="card">
+  <section class="card">
     <div class="card-header">
-      底盘里程计 (Odom)
+      <span><UiIcon name="activity" :size="17" />底盘遥测</span>
+      <small>{{ connected ? '/odom' : '暂无数据' }}</small>
     </div>
     <div class="card-body">
-      <div v-if="!odomData" class="empty-text">等待数据 (/odom)...</div>
+      <div v-if="!odomData" class="empty-text">等待 /odom 数据</div>
       <div v-else class="telemetry-grid">
-        <div class="data-group">
-          <div class="data-label">位置 X</div>
-          <div class="data-value">{{ odomData.pose.pose.position.x.toFixed(3) }} m</div>
-        </div>
-        <div class="data-group">
-          <div class="data-label">位置 Y</div>
-          <div class="data-value">{{ odomData.pose.pose.position.y.toFixed(3) }} m</div>
-        </div>
-        <div class="data-group">
-          <div class="data-label">线速度</div>
-          <div class="data-value">{{ odomData.twist.twist.linear.x.toFixed(3) }} m/s</div>
-        </div>
-        <div class="data-group">
-          <div class="data-label">角速度</div>
-          <div class="data-value">{{ odomData.twist.twist.angular.z.toFixed(3) }} rad/s</div>
+        <div v-for="item in telemetry" :key="item.label" class="data-group">
+          <span class="data-label">{{ item.label }}</span>
+          <span class="data-value">{{ item.value }}<small>{{ item.unit }}</small></span>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
 <script setup>
-defineProps({
-  odomData: Object
+import { computed } from 'vue'
+import UiIcon from './UiIcon.vue'
+
+const props = defineProps({ odomData: Object })
+const telemetry = computed(() => {
+  const pose = props.odomData?.pose?.pose?.position
+  const twist = props.odomData?.twist?.twist
+  return [
+    { label: '位置 X', value: format(pose?.x), unit: 'm' },
+    { label: '位置 Y', value: format(pose?.y), unit: 'm' },
+    { label: '线速度', value: format(twist?.linear?.x), unit: 'm/s' },
+    { label: '角速度', value: format(twist?.angular?.z), unit: 'rad/s' }
+  ]
 })
+
+function format(value) {
+  return Number.isFinite(value) ? value.toFixed(3) : '--'
+}
 </script>
 
 <style scoped>
-.empty-text {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  text-align: center;
-  padding: 10px 0;
-}
-.telemetry-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
+.telemetry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .data-group {
-  background: rgba(255, 255, 255, 0.05);
-  padding: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  text-align: center;
+  background: var(--bg-soft);
 }
-.data-label {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-.data-value {
-  font-family: var(--font-mono);
-  font-size: 0.95rem;
-  color: var(--accent-primary);
-  font-weight: 500;
-}
+.data-label { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: 0.62rem; }
+.data-value { color: var(--text-primary); font-family: var(--font-mono); font-size: 0.82rem; }
+.data-value small { margin-left: 4px; color: var(--text-muted); font-size: 0.58rem; }
 </style>

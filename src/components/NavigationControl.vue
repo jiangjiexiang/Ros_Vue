@@ -1,138 +1,104 @@
 <template>
-  <div class="card" v-if="connected">
-    <div class="card-header">
-      导航控制
+  <section class="control-section">
+    <p class="control-description">选择已保存的地图并启动配置的导航任务，然后在地图中设置初始位置与目标。</p>
+
+    <div class="nav-section">
+      <label class="nav-label" for="navigation-map">导航地图</label>
+      <div class="map-select-group">
+        <select
+          id="navigation-map"
+          v-model="selectedMap"
+          class="map-select"
+          :disabled="!connected || isNavigating || isLoading"
+        >
+          <option value="" disabled>请选择地图</option>
+          <option v-for="map in maps" :key="map.path" :value="map.path">{{ map.name }}</option>
+        </select>
+        <button class="btn-icon" :disabled="isLoading" title="刷新地图列表" @click="loadMaps">
+          <UiIcon name="refresh" :size="16" :class="{ spinning: isLoading }" />
+        </button>
+      </div>
+      <div v-if="maps.length === 0 && !isLoading" class="nav-hint">暂无地图，请先完成建图并保存。</div>
     </div>
-    <div class="card-body">
-      <!-- 地图选择 -->
-      <div class="nav-section">
-        <label class="nav-label">选择地图</label>
-        <div class="map-select-group">
-          <select
-            class="map-select"
-            v-model="selectedMap"
-            :disabled="isNavigating || isLoading"
-          >
-            <option value="" disabled>— 请选择地图 —</option>
-            <option v-for="m in maps" :key="m.path" :value="m.path">
-              {{ m.name }}
-            </option>
-          </select>
-          <button class="btn-icon" @click="loadMaps" :disabled="isLoading" title="刷新列表">
-            <span :class="['refresh-icon', { spinning: isLoading }]">↻</span>
-          </button>
-        </div>
-        <div v-if="maps.length === 0 && !isLoading" class="nav-hint">
-          暂无地图，请先完成建图并保存
-        </div>
-      </div>
 
-      <!-- 启动/停止按钮 -->
-      <div class="nav-section">
-        <button
-          v-if="!isNavigating"
-          class="btn btn-connect nav-btn"
-          @click="startNavigation"
-          :disabled="isLoading || !selectedMap"
-        >
-          {{ isLoading ? '正在启动...' : '开始导航' }}
-        </button>
-        <button
-          v-else
-          class="btn btn-disconnect nav-btn"
-          @click="stopNavigation"
-          :disabled="isLoading"
-        >
-          {{ isLoading ? '正在停止...' : '停止导航' }}
-        </button>
-      </div>
+    <button
+      v-if="!isNavigating"
+      class="btn btn-connect nav-btn"
+      :disabled="!connected || isLoading || !selectedMap"
+      @click="startNavigation"
+    >
+      <UiIcon name="play" :size="15" />{{ isLoading ? '正在启动…' : '开始导航' }}
+    </button>
+    <button v-else class="btn btn-disconnect nav-btn" :disabled="isLoading" @click="stopNavigation">
+      <UiIcon name="stop" :size="15" />{{ isLoading ? '正在停止…' : '停止导航' }}
+    </button>
 
-      <!-- 导航状态 -->
-      <div class="nav-status">
-        <span v-if="isNavigating" class="status-nav-active">● 导航节点运行中</span>
-        <span v-else class="status-nav-idle">○ 导航节点未运行</span>
-      </div>
-
-      <!-- 初始位置设置 (仅导航运行中显示) -->
-      <div v-if="isNavigating" class="nav-section mt-2">
-        <button
-          class="nav-btn"
-          :class="isSettingPose ? 'btn-pose-active' : 'btn-pose'"
-          @click="togglePoseMode"
-        >
-          {{ isSettingPose ? '正在设置... (按住拖动)' : '设置初始位置' }}
-        </button>
-      </div>
-
-      <!-- 多点导航 -->
-      <div v-if="isNavigating && !isSettingPose" class="nav-section mt-2">
-        <button
-          class="nav-btn"
-          :class="multiPointMode ? 'btn-waypoint-active' : 'btn-waypoint'"
-          @click="toggleMultiPointMode"
-        >
-          {{ multiPointMode ? '多点导航: 已开启' : '多点导航: 已关闭' }}
-        </button>
-        <div v-if="multiPointMode" class="waypoint-row">
-          <span class="waypoint-count">队列点位: {{ waypointCount }}</span>
-          <button class="btn-clear-waypoints" @click="clearWaypoints" :disabled="waypointCount === 0">
-            清空
-          </button>
-        </div>
-      </div>
-
-      <!-- 操作提示 -->
-      <div v-if="isNavigating && !isSettingPose" class="nav-hint goal-hint" style="margin-top:4px">
-        {{ multiPointMode ? '双击地图连续添加航点，系统将自动依次执行' : '双击地图设定导航目标点' }}
-      </div>
-      <div v-if="isSettingPose" class="nav-hint pose-hint">
-        🟡 按住地图拖动以设定位置和朝向
-      </div>
-
-      <!-- 错误信息 -->
-      <div v-if="errorMsg" class="error-message mt-2">
-        {{ errorMsg }}
-      </div>
+    <div class="process-status" :class="{ active: isNavigating }">
+      <i></i>
+      <span>{{ !connected ? '等待机器人连接' : isNavigating ? '导航节点运行中' : '导航节点未运行' }}</span>
     </div>
-  </div>
+
+    <template v-if="isNavigating">
+      <div class="navigation-modes">
+        <button :class="{ active: isSettingPose }" @click="togglePoseMode">
+          <UiIcon name="crosshair" :size="16" />初始定位
+        </button>
+        <button :class="{ active: multiPointMode }" :disabled="isSettingPose" @click="toggleMultiPointMode">
+          <UiIcon name="route" :size="16" />多点导航
+        </button>
+      </div>
+
+      <div v-if="multiPointMode && !isSettingPose" class="waypoint-row">
+        <span>航点队列 <strong>{{ waypointCount }}</strong></span>
+        <button :disabled="waypointCount === 0" @click="clearWaypoints">清空队列</button>
+      </div>
+
+      <div class="navigation-hint" :class="{ pose: isSettingPose }">
+        <UiIcon :name="isSettingPose ? 'crosshair' : 'route'" :size="15" />
+        <span>{{ hintText }}</span>
+      </div>
+    </template>
+
+    <div v-if="errorMsg" class="error-message mt-2">{{ errorMsg }}</div>
+  </section>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { API_BASE } from '../config.js'
+import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
   connected: Boolean,
-  multiPointMode: {
-    type: Boolean,
-    default: false
-  },
-  waypointCount: {
-    type: Number,
-    default: 0
-  }
+  isNavigating: Boolean,
+  isSettingPose: Boolean,
+  multiPointMode: { type: Boolean, default: false },
+  waypointCount: { type: Number, default: 0 }
 })
 
 const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'navigationStarted', 'clear-waypoints'])
-
-const isNavigating = ref(false)
+const isNavigating = ref(props.isNavigating)
 const isLoading = ref(false)
 const errorMsg = ref('')
 const maps = ref([])
 const selectedMap = ref('')
-const isSettingPose = ref(false)
+const isSettingPose = ref(props.isSettingPose)
 const multiPointMode = ref(props.multiPointMode)
-
-const API_BASE = `http://${window.location.hostname}:3000/api`
 let statusTimer = null
+
+const hintText = computed(() => {
+  if (isSettingPose.value) return '在地图中按住并拖动，设置机器人位置与朝向。'
+  return multiPointMode.value ? '双击地图连续添加航点，机器人将依次执行。' : '双击地图设置一个导航目标点。'
+})
 
 async function loadMaps() {
   isLoading.value = true
   try {
     const res = await fetch(`${API_BASE}/list_maps`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     maps.value = data.maps || []
     if (maps.value.length > 0 && !selectedMap.value) {
-      // 自动选择最新的地图（最后一个，按字母排序，时间戳格式会是最新的）
       selectedMap.value = maps.value[maps.value.length - 1].path
     }
   } catch (err) {
@@ -146,6 +112,7 @@ async function loadMaps() {
 async function checkStatus() {
   try {
     const res = await fetch(`${API_BASE}/navigation_status`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     isNavigating.value = data.isRunning
     emit('update:isNavigating', data.isRunning)
@@ -169,15 +136,12 @@ async function startNavigation() {
       body: JSON.stringify({ mapPath: selectedMap.value })
     })
     const data = await res.json()
-    if (data.success) {
-      isNavigating.value = true
-      emit('update:isNavigating', true)
-      emit('navigationStarted')
-    } else {
-      errorMsg.value = data.error || '启动失败'
-    }
+    if (!data.success) throw new Error(data.error || '启动失败')
+    isNavigating.value = true
+    emit('update:isNavigating', true)
+    emit('navigationStarted')
   } catch (err) {
-    errorMsg.value = '无法连接到本地控制服务'
+    errorMsg.value = err.message || '无法连接到本地控制服务'
   } finally {
     isLoading.value = false
   }
@@ -186,11 +150,7 @@ async function startNavigation() {
 async function stopNavigation() {
   isLoading.value = true
   errorMsg.value = ''
-  // 停止导航时也退出初始位置模式
-  if (isSettingPose.value) {
-    isSettingPose.value = false
-    emit('update:isSettingPose', false)
-  }
+  setPoseMode(false)
   if (multiPointMode.value) {
     multiPointMode.value = false
     emit('update:multiPointMode', false)
@@ -199,39 +159,38 @@ async function stopNavigation() {
   try {
     const res = await fetch(`${API_BASE}/stop_navigation`, { method: 'POST' })
     const data = await res.json()
-    if (data.success) {
-      isNavigating.value = false
-      emit('update:isNavigating', false)
-    } else {
-      errorMsg.value = data.error || '停止失败'
-    }
+    if (!data.success) throw new Error(data.error || '停止失败')
+    isNavigating.value = false
+    emit('update:isNavigating', false)
   } catch (err) {
-    errorMsg.value = '无法连接到本地控制服务'
+    errorMsg.value = err.message || '无法连接到本地控制服务'
   } finally {
     isLoading.value = false
   }
 }
 
+function setPoseMode(enabled) {
+  isSettingPose.value = enabled
+  emit('update:isSettingPose', enabled)
+}
+
 function togglePoseMode() {
-  isSettingPose.value = !isSettingPose.value
-  emit('update:isSettingPose', isSettingPose.value)
+  setPoseMode(!isSettingPose.value)
 }
 
 function toggleMultiPointMode() {
   multiPointMode.value = !multiPointMode.value
   emit('update:multiPointMode', multiPointMode.value)
-  if (!multiPointMode.value) {
-    emit('clear-waypoints')
-  }
+  if (!multiPointMode.value) emit('clear-waypoints')
 }
 
 function clearWaypoints() {
   emit('clear-waypoints')
 }
 
-watch(() => props.multiPointMode, (value) => {
-  multiPointMode.value = value
-})
+watch(() => props.multiPointMode, (value) => { multiPointMode.value = value })
+watch(() => props.isNavigating, (value) => { isNavigating.value = value })
+watch(() => props.isSettingPose, (value) => { isSettingPose.value = value })
 
 onMounted(async () => {
   await loadMaps()
@@ -245,221 +204,59 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.nav-section {
-  margin-bottom: 12px;
-}
-
-.nav-label {
-  display: block;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 6px;
-}
-
-.map-select-group {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.map-select {
-  flex: 1;
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  outline: none;
-  cursor: pointer;
-  transition: var(--transition);
-}
-
-.map-select:focus {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
-}
-
-.map-select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.map-select option {
-  background: #1e293b;
-  color: var(--text-primary);
-}
-
+.nav-section { margin-bottom: 13px; }
+.nav-label { display: block; margin-bottom: 7px; color: var(--text-muted); font-size: 0.66rem; }
+.map-select-group { display: flex; gap: 7px; align-items: center; }
+.map-select { flex: 1; min-width: 0; height: 37px; padding: 0 9px; font-size: 0.7rem; cursor: pointer; }
+.map-select option { background: var(--bg-elevated); color: var(--text-primary); }
 .btn-icon {
-  width: 34px;
-  height: 34px;
-  background: rgba(99, 102, 241, 0.1);
+  display: grid;
+  place-items: center;
+  width: 37px;
+  height: 37px;
+  flex: 0 0 auto;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  font-size: 1rem;
+  background: var(--bg-soft);
   cursor: pointer;
+}
+.btn-icon:hover:not(:disabled) { color: var(--accent-primary); border-color: rgba(34, 211, 238, 0.3); }
+.spinning { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.nav-hint { margin-top: 7px; color: var(--text-muted); font-size: 0.66rem; line-height: 1.5; }
+.navigation-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 14px; }
+.navigation-modes button {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: var(--transition);
-  flex-shrink: 0;
-}
-
-.btn-icon:hover {
-  background: rgba(99, 102, 241, 0.2);
-  color: var(--text-primary);
-}
-
-.refresh-icon {
-  display: inline-block;
-  transition: transform 0.5s ease;
-}
-
-.refresh-icon.spinning {
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.nav-btn {
-  width: 100%;
-  font-weight: 600;
-  padding: 12px;
-}
-
-.nav-status {
-  margin-top: 4px;
-  font-size: 0.82rem;
-}
-
-.status-nav-active {
-  color: #34d399;
-}
-
-.status-nav-idle {
-  color: #9ca3af;
-}
-
-.nav-hint {
-  margin-top: 6px;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-.goal-hint {
-  color: #a78bfa;
-  background: rgba(99, 102, 241, 0.08);
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  gap: 6px;
+  height: 36px;
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
-}
-
-.pose-hint {
-  color: #fbbf24;
-  background: rgba(251, 191, 36, 0.08);
-  border: 1px solid rgba(251, 191, 36, 0.25);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
-}
-
-.btn-pose {
-  width: 100%;
-  padding: 10px;
-  font-weight: 600;
-  font-size: 0.82rem;
-  background: rgba(251, 191, 36, 0.1);
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  color: #fbbf24;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: var(--transition);
-}
-
-.btn-pose:hover {
-  background: rgba(251, 191, 36, 0.2);
-}
-
-.btn-pose-active {
-  width: 100%;
-  padding: 10px;
-  font-weight: 600;
-  font-size: 0.82rem;
-  background: rgba(251, 191, 36, 0.25);
-  border: 1px solid #fbbf24;
-  color: #fbbf24;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  animation: pose-pulse 1.2s ease-in-out infinite;
-}
-
-.btn-waypoint {
-  width: 100%;
-  padding: 10px;
-  font-weight: 600;
-  font-size: 0.82rem;
-  background: rgba(34, 197, 94, 0.12);
-  border: 1px solid rgba(34, 197, 94, 0.35);
-  color: #4ade80;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: var(--transition);
-}
-
-.btn-waypoint:hover {
-  background: rgba(34, 197, 94, 0.2);
-}
-
-.btn-waypoint-active {
-  width: 100%;
-  padding: 10px;
-  font-weight: 600;
-  font-size: 0.82rem;
-  background: rgba(34, 197, 94, 0.25);
-  border: 1px solid #4ade80;
-  color: #4ade80;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.waypoint-row {
-  margin-top: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.waypoint-count {
-  font-size: 0.78rem;
   color: var(--text-secondary);
-}
-
-.btn-clear-waypoints {
-  padding: 4px 10px;
-  font-size: 0.75rem;
-  border-radius: 6px;
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
+  background: var(--bg-soft);
+  font-size: 0.68rem;
   cursor: pointer;
 }
-
-.btn-clear-waypoints:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.navigation-modes button.active { border-color: rgba(34, 211, 238, 0.3); color: var(--accent-primary); background: rgba(34, 211, 238, 0.07); }
+.waypoint-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; color: var(--text-muted); font-size: 0.67rem; }
+.waypoint-row strong { color: var(--text-primary); font-family: var(--font-mono); }
+.waypoint-row button { border: 0; color: var(--danger); background: transparent; font-size: 0.65rem; cursor: pointer; }
+.navigation-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(34, 211, 238, 0.15);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: rgba(34, 211, 238, 0.045);
+  font-size: 0.65rem;
+  line-height: 1.6;
 }
-
-@keyframes pose-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
-  50% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); }
-}
-
-.mt-2 { margin-top: 8px; }
+.navigation-hint svg { flex: 0 0 auto; margin-top: 2px; color: var(--accent-primary); }
+.navigation-hint.pose { border-color: rgba(251, 191, 36, 0.18); background: rgba(251, 191, 36, 0.05); }
+.navigation-hint.pose svg { color: var(--warning); }
 </style>

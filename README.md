@@ -1,84 +1,91 @@
-# 机器人中控台 (Robot Control Console)
+# ROS 2 机器人控制台
 
-## 项目简介
-这是一个基于 Web 的机器人中控台，用于实时监控和控制 ROS 2 机器人。该项目集成了地图展示、摇杆控制、状态监测以及建图管理等功能。
-![1](img/1.png)
-## 核心功能
-*   实时 SLAM 栅格地图显示。
-*   机器人摇杆远程控制。
-*   电池电压与里程计数据实时监测。
-*   可视化建图控制（开始/停止建图）。
-*   地图保存功能，支持在网页端输入地图名称。
-*   视图自动重置功能，在开始建图/导航时自动对齐视野。
-*   页面自动连接 Foxglove WebSocket（默认 `ws://<页面主机>:8765`）。
-*   连接成功会显示“已连接”，连接失败会显示错误信息。
+一个用于 ROS 2 机器人的 Vue 网页，包含地图显示、运动控制、建图和导航操作。
 
-## 环境要求
-*   Ubuntu 22.04 (WSL 兼容)
-*   ROS 2 Humble
-*   Node.js (建议版本 v18+)
-*   foxglove_bridge
+## 启动
 
-## 快速启动
-在项目根目录下执行以下脚本，即可同时启动后端服务和前端界面：
+### 使用 ROS 开发容器
+
+Docker 只提供 ROS 2、Node.js 和 RViz 开发工具，不包含本项目，也不会自动启动项目。源码挂载在容器的 `/root/ros2_ws`。
+
 ```bash
+docker exec -it ros2-humble-dev bash
+```
+
+进入容器后手动启动：
+
+```bash
+cd /root/ros2_ws/RobotConsole
+npm ci
 bash start_console.sh
 ```
-启动成功后，在浏览器访问：`http://localhost:5173`
 
-## 部署配置 (重要)
-当您将项目部署到自己的电脑或机器人上时，请务必根据实际路径修改以下配置文件：
+打开 http://localhost:5173 。修改 Vue 文件后页面会自动刷新。
 
-### 1. 修改 `ros_config.json`
-该文件位于项目根目录，控制着所有 ROS 2 指令的触发和路径：
+### 本机 Ubuntu / WSL
 
-*   **指令更新**: 确保 `command` 字段使用 `ros2`，并在 `args` 中配置正确的包名和启动项。
-*   **`save_dir`**: 修改为您希望保存地图的 **绝对路径**。
-    ```json
-    "save_dir": "/home/your_username/your_workspace/maps"
-    ```
-*   **`maps_dir`**: 修改为您读取历史地图的目录。
-*   **`topics`**: 如果您的机器人话题名不同（如雷达不是 `/scan`），请在此处修改。
+需要 Node.js 18+、ROS 2 Humble 和 foxglove_bridge。
 
-### 2. 修改 `server.js`
-后端服务中 hardcode 了环境加载命令，请搜索并修改：
-*   **环境加载**: 确保加载的是 `/opt/ros/humble/setup.bash` 以及您本地工作空间的 `install/setup.bash`。
+```bash
+npm ci
+bash start_console.sh
+```
 
-### 3. 修改 `start_console.sh`
-启动脚本中包含工作空间自动检测逻辑：
-*   **`FISHBOT_WORKSPACE`**: 修改为您的 ROS 2 工作空间绝对路径。
+脚本会启动前端、后端和 Foxglove。
 
-### 4. 修改 `src/App.vue` (可选)
-如果网页控制端和机器人不在同一台机器上：
-*   找到 `const DEFAULT_WS_URL`，将 `window.location.hostname` 改为机器人的 **实际 IP 地址**。
+## 配置
 
-## 配置说明
-项目核心逻辑由 `ros_config.json` 驱动，你可以直接在该文件中修改 ROS 2 指令：
-*   `startup`: 配置后台自动运行的任务（如 Foxglove Bridge 的高带宽模式设置）。
-*   `mapping`: 配置建图算法及其参数。
-*   `navigation`: 配置导航启动命令及参数。
-*   `save_map`: 配置地图保存命令及保存路径。
-*   `topics`: 配置前端使用的话题名（不同机器人可直接改这里）。
+通常只需要修改 `ros_config.json`：
 
-`topics` 典型字段：
-*   `cmd_vel`
-*   `battery`
-*   `map`
-*   `scan`
-*   `tf`
-*   `odom`
-*   `plan`
-*   `goal_pose`
-*   `initial_pose`
-*   `navigate_feedback`
-*   `imu`
+```json
+{
+  "workspace": "..",
+  "maps_dir": "maps"
+}
+```
 
-## 地图保存说明
-通过网页端保存的地图文件（.yaml 和 .pgm）默认存储在以下路径：
-`/home/jiang/workspace/fishbot/maps`
+- `workspace`：ROS 工作空间目录，后端会加载其中的 `install/setup.bash`。默认是项目上一级目录，也可以改成你的 ROS 工作空间绝对路径。
+- `maps_dir`：地图保存和读取目录。相对路径按项目目录计算。
+- `tasks`：Foxglove、建图和导航命令。
+- `topics`：机器人话题名称。
 
-## 技术路线
-*   前端框架：Vue 3 + Vite
-*   后端服务：Node.js (Express)
-*   协议：Foxglove WebSocket v1 协议
-*   机器人系统：ROS 2
+前端地址默认无需设置。如果后端或 Foxglove 不在本机，修改 `src/config.js` 即可。
+
+## 开发
+
+```text
+src/App.vue                 页面布局
+src/assets/main.css         全局样式
+src/components/             页面组件
+src/composables/useFoxglove.js  ROS 数据通信
+server.js                   后端与 ROS 任务管理
+ros_config.json             ROS 配置
+```
+
+检查代码：
+
+```bash
+npm run build
+node --check server.js
+```
+
+## 建图和导航
+
+本项目不包含具体机器人的建图或导航实现，默认 `mapping` 和 `navigation` 任务为空。根据自己的机器人修改 `ros_config.json`，例如：
+
+```json
+{
+  "command": "ros2",
+  "args": ["launch", "your_slam_package", "slam.launch.py"]
+}
+```
+
+保存地图默认使用 `nav2_map_server/map_saver_cli`，也可以修改 `save_map`。
+
+测试不同机器人或仿真器时，可通过 `ROS_CONFIG_FILE` 指向项目外的配置文件，不需要修改仓库默认配置：
+
+```bash
+ROS_CONFIG_FILE=/path/to/test_config.json bash start_console.sh
+```
+
+网页和 Foxglove 可以独立运行；实际建图、保存地图和导航需要你的 ROS 环境提供对应功能包。

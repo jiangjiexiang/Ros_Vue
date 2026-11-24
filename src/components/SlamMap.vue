@@ -1,22 +1,25 @@
 <template>
   <div class="card map-card">
-    <div class="card-header">
-      <div class="header-left">
-        SLAM 栅格地图
+    <div class="card-header map-header">
+      <div class="map-title">
+        <UiIcon name="map" :size="19" />
+        <div>
+          <span>SLAM / NAV2</span>
+          <strong>实时环境地图</strong>
+        </div>
       </div>
       <div class="header-right">
-        <!-- 导航特有控件 -->
-        <template v-if="isNavigating">
-          <span class="nav-status-mini">导航中</span>
-          <button class="btn-mini btn-mini-pose" :class="{ 'active': isSettingPose }" @click="togglePoseMode">
-            设置初始位置
-          </button>
-        </template>
-
-        <button v-if="isMapping" class="btn-mini btn-mini-save" @click="openSaveDialog" :disabled="isSaving">
-          {{ isSaving ? '保存中...' : '保存地图' }}
+        <span class="map-live" :class="{ active: connected }"><i></i>{{ connected ? '实时' : '离线' }}</span>
+        <span v-if="isNavigating" class="nav-status-mini">导航中</span>
+        <button v-if="isNavigating" class="btn-mini btn-mini-pose" :class="{ active: isSettingPose }" @click="togglePoseMode">
+          <UiIcon name="crosshair" :size="13" />初始定位
         </button>
-        <button v-if="hasMap" class="btn-mini" @click="resetView">重置视图</button>
+        <button v-if="isMapping" class="btn-mini btn-mini-save" @click="openSaveDialog" :disabled="isSaving">
+          <UiIcon name="save" :size="13" />{{ isSaving ? '保存中…' : '保存地图' }}
+        </button>
+        <button v-if="hasMap" class="btn-mini" @click="resetView">
+          <UiIcon name="refresh" :size="13" />重置视图
+        </button>
       </div>
     </div>
     <div class="card-body">
@@ -63,8 +66,10 @@
         </div>
       </div>
       <div v-else class="map-placeholder">
-        <p v-if="!connected">请先连接机器人</p>
-        <p v-else>等待地图或雷达数据...</p>
+        <div class="placeholder-icon"><UiIcon name="map" :size="30" /></div>
+        <strong>{{ connected ? '等待环境数据' : '地图工作区未连接' }}</strong>
+        <p>{{ connected ? '正在等待 /map 或 /scan 话题数据，请启动建图或机器人传感器。' : '连接机器人后，这里将显示栅格地图、激光扫描与规划路径。' }}</p>
+        <span class="placeholder-badge"><i :class="{ active: connected }"></i>{{ connected ? '等待话题数据' : '离线' }}</span>
       </div>
 
       <!-- 保存状态提示 -->
@@ -111,6 +116,8 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { API_BASE } from '../config.js'
+import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
   connected: Boolean,
@@ -144,7 +151,6 @@ const mapNameInputRef = ref(null)
 const isSaving = ref(false)
 const saveMsg = ref('')
 const saveSuccess = ref(false)
-const API_BASE = `http://${window.location.hostname}:3000/api`
 
 // === 导航 ===
 const goalPoint = ref(null)  // { x, y } in world (map) coords
@@ -244,6 +250,7 @@ const mapInfo = ref(null)
 
 // 离屏 Canvas，用于存储渲染好的地图图像
 let offscreenCanvas = null
+let mapFitPending = true
 
 // 视图变换状态
 const scale = ref(1.0)
@@ -332,8 +339,10 @@ function updateOffscreenCanvas(occupancyGrid) {
   
   mapInfo.value = { width, height, resolution: info.resolution }
   
-  if (scale.value === 1.0 && offsetX.value === 0) {
-    autoFit()
+  if (mapFitPending) {
+    nextTick(() => {
+      if (mapFitPending && !autoFit()) requestDraw()
+    })
   } else {
     requestDraw()
   }
@@ -698,24 +707,27 @@ watch(() => props.scanData, (newData) => {
 }, { deep: true })
 
 function autoFit() {
-  if (!offscreenCanvas || !containerRef.value) return
+  if (!offscreenCanvas || !containerRef.value) return false
   const container = containerRef.value
   const cw = container.clientWidth
   const ch = container.clientHeight
   const mw = offscreenCanvas.width
   const mh = offscreenCanvas.height
+  if (cw === 0 || ch === 0) return false
 
-  if (cw === 0 || ch === 0) return
-
-  // 计算缩放：使图像完整放入容器，且充满其中一个维度
-  const s = Math.min(cw / mw, ch / mh)
+  const padding = 40
+  const fittedScale = Math.min((cw - padding) / mw, (ch - padding) / mh)
+  const s = Math.max(0.1, Math.min(20, fittedScale))
   scale.value = s
   offsetX.value = (cw - mw * s) / 2
   offsetY.value = (ch - mh * s) / 2
+  mapFitPending = false
   requestDraw()
+  return true
 }
 
 function resetView() {
+  mapFitPending = true
   autoFit()
 }
 
@@ -888,6 +900,13 @@ window.addEventListener('resize', () => {
   draw()
 })
 
+watch(shouldShowCanvas, (visible) => {
+  if (visible) nextTick(() => {
+    if (mapFitPending) autoFit()
+    else draw()
+  })
+})
+
 watch(() => props.mapData, (newData) => {
   if (newData && newData.info && newData.data) {
     updateOffscreenCanvas(newData)
@@ -969,69 +988,109 @@ defineExpose({
 </script>
 
 <style scoped>
-.header-left {
+.map-header {
+  min-height: 56px;
+  padding: 0 16px;
+}
+.map-title {
   display: flex;
   align-items: center;
+  gap: 9px;
 }
-.header-right {
+.map-title > svg { color: var(--accent-primary); }
+.map-title > div { display: flex; flex-direction: column; gap: 3px; }
+.map-title span {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.54rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+}
+.map-title strong { color: var(--text-primary); font-size: 0.78rem; font-weight: 600; }
+.header-right { display: flex; align-items: center; gap: 7px; }
+.map-live {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  margin-right: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  letter-spacing: 0.06em;
 }
+.map-live i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); }
+.map-live.active { color: var(--success); }
+.map-live.active i { background: var(--success); box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.08); }
 .btn-mini {
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #fff;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: var(--bg-soft);
+  font-size: 0.65rem;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: var(--transition);
 }
-.btn-mini:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.2);
-}
-.btn-mini:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn-mini-save {
-  background: rgba(52, 211, 153, 0.15);
-  border-color: rgba(52, 211, 153, 0.4);
-  color: #34d399;
-}
-.btn-mini-save:hover:not(:disabled) {
-  background: rgba(52, 211, 153, 0.3);
-}
-.btn-mini-pose {
-  background: rgba(251, 191, 36, 0.15);
-  border-color: rgba(251, 191, 36, 0.4);
-  color: #fbbf24;
-}
-.btn-mini-pose:hover {
-  background: rgba(251, 191, 36, 0.3);
-}
-.btn-mini-pose.active {
-  background: rgba(251, 191, 36, 0.3);
-  border-color: #fbbf24;
-  animation: pose-pulse 1.2s ease-in-out infinite;
-}
-@keyframes pose-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4); }
-  50% { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0); }
-}
-.nav-status-mini {
-  color: #34d399;
-  font-size: 11px;
-  font-weight: bold;
-  margin-right: 4px;
-}
+.btn-mini:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text-primary); background: rgba(148, 163, 184, 0.1); }
+.btn-mini:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-mini-save { border-color: rgba(52, 211, 153, 0.22); color: var(--success); background: rgba(52, 211, 153, 0.06); }
+.btn-mini-save:hover:not(:disabled) { background: rgba(52, 211, 153, 0.12); }
+.btn-mini-pose { border-color: rgba(251, 191, 36, 0.22); color: var(--warning); background: rgba(251, 191, 36, 0.06); }
+.btn-mini-pose.active { border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.12); }
+.nav-status-mini { color: var(--success); font-size: 0.65rem; }
 .map-card :deep(.card-body) {
+  flex: 1;
+  min-height: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   position: relative;
 }
+.map-placeholder {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 30px;
+  text-align: center;
+  background:
+    linear-gradient(rgba(148, 163, 184, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.025) 1px, transparent 1px),
+    #080f1b;
+  background-size: 32px 32px;
+}
+.placeholder-icon {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(34, 211, 238, 0.16);
+  border-radius: 18px;
+  color: var(--accent-primary);
+  background: rgba(34, 211, 238, 0.04);
+}
+.map-placeholder strong { margin-bottom: 9px; color: var(--text-secondary); font-size: 0.88rem; font-weight: 550; }
+.map-placeholder p { max-width: 390px; color: var(--text-muted); font-size: 0.7rem; line-height: 1.8; }
+.placeholder-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+}
+.placeholder-badge i { width: 5px; height: 5px; border-radius: 50%; background: var(--text-muted); }
+.placeholder-badge i.active { background: var(--success); }
 .map-canvas-container {
   width: 100%;
   flex: 1;

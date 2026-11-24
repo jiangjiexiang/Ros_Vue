@@ -1,304 +1,210 @@
 import express from 'express';
 import cors from 'cors';
-import { spawn, exec } from 'child_process';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const port = 3000;
+const activeProcesses = new Map();
 
 app.use(cors());
 app.use(express.json());
 
-// 记录所有后端的子进程
-let activeProcesses = {};
-
-// 加载配置文件
 function loadConfig() {
     try {
-        const configPath = path.join(__dirname, 'ros_config.json');
-        const data = fs.readFileSync(configPath, 'utf8');
-        return JSON.parse(data);
+        const configPath = process.env.ROS_CONFIG_FILE || path.join(__dirname, 'ros_config.json');
+        return JSON.parse(fs.readFileSync(configPath, 'utf8'));
     } catch (err) {
-        console.error('无法读取配置文件:', err);
-        return { tasks: { mapping: [] } };
+        console.error('无法读取 ROS 配置:', err.message);
+        return { tasks: {} };
     }
 }
 
-// 运行时配置（前端可读取的可配置项）
-app.get('/api/runtime_config', (req, res) => {
-    const config = loadConfig();
-    res.json({
-        topics: config.topics || {}
+function resolveFromProject(directory = '.') {
+    return path.isAbsolute(directory) ? directory : path.resolve(__dirname, directory);
+}
+
+function mapsDir(config) {
+    return resolveFromProject(config.maps_dir || 'maps');
+}
+
+function workspaceSetup(config) {
+    return resolveFromProject(path.join(config.workspace || '..', 'install', 'setup.bash'));
+}
+
+function runRos(command, args, config, detached = true) {
+    const script = [
+        'set -e',
+        'source /opt/ros/humble/setup.bash',
+        'if [[ -f "$1" ]]; then source "$1"; fi',
+        'shift',
+        'exec "$@"'
+    ].join('\n');
+
+    return spawn('bash', ['-c', script, 'ros2-task', workspaceSetup(config), command, ...args], {
+        detached,
+        stdio: 'inherit'
     });
+}
+
+function startTask(task, config, extraArgs = []) {
+    if (activeProcesses.has(task.id)) return;
+
+    const args = [...(task.args || []), ...extraArgs];
+    console.log(`[${task.id}] ${task.description || task.command}`);
+    const proc = runRos(task.command, args, config);
+    activeProcesses.set(task.id, proc);
+
+    proc.once('error', (err) => {
+        console.error(`[${task.id}] 启动失败: ${err.message}`);
+        activeProcesses.delete(task.id);
+    });
+    proc.once('exit', (code) => {
+        console.log(`[${task.id}] 已退出 (${code})`);
+        activeProcesses.delete(task.id);
+    });
+}
+
+function startTasks(tasks, config, extraArgs = []) {
+    tasks.forEach((task) => {
+        setTimeout(() => startTask(task, config, extraArgs), Number(task.delay) || 0);
+    });
+}
+
+function stopTask(id) {
+    const proc = activeProcesses.get(id);
+    if (!proc?.pid) return;
+    try {
+        process.kill(-proc.pid, 'SIGTERM');
+    } catch (err) {
+        if (err.code !== 'ESRCH') console.error(`[${id}] 停止失败: ${err.message}`);
+        activeProcesses.delete(id);
+    }
+}
+
+function stopTasks(tasks) {
+    tasks.forEach((task) => stopTask(task.id));
+}
+
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', activeTasks: Array.from(activeProcesses.keys()) });
 });
 
-// 通用启动任务接口
+app.get('/api/runtime_config', (req, res) => {
+    res.json({ topics: loadConfig().topics || {} });
+});
+
 app.post('/api/run_task/:taskName', (req, res) => {
-    const taskName = req.params.taskName;
-    console.log(`收到启动任务请求: ${taskName}`);
-
     const config = loadConfig();
-    const tasks = config.tasks[taskName] || [];
-
+    const tasks = config.tasks?.[req.params.taskName] || [];
     if (tasks.length === 0) {
-        return res.status(404).json({ success: false, error: `任务类别 ${taskName} 未定义或为空` });
+        return res.status(404).json({ success: false, error: '任务未定义或为空' });
     }
-
-    try {
-        tasks.forEach((task) => {
-            const { id, command, args, delay, description } = task;
-
-            setTimeout(() => {
-                if (!activeProcesses[id]) {
-                    console.log(`[${id}] 启动: ${description} (${command} ${args.join(' ')})`);
-
-                    // 构造包装命令，确保在 shell 中执行并加载 ROS 环境
-                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${args.join(' ')}`;
-
-                    const proc = spawn('bash', ['-c', fullCommand], {
-                        detached: true,
-                        stdio: 'inherit'
-                    });
-
-                    proc.on('error', (err) => {
-                        console.error(`[${id}] 启动错误:`, err.message);
-                        activeProcesses[id] = null;
-                    });
-
-                    proc.on('exit', (code) => {
-                        console.log(`[${id}] 已退出 (代码: ${code})`);
-                        activeProcesses[id] = null;
-                    });
-
-                    activeProcesses[id] = proc;
-                }
-            }, delay || 0);
-        });
-
-        res.json({ success: true, message: `任务 [${taskName}] 已按配置启动` });
-    } catch (error) {
-        console.error(`[${taskName}] 启动失败:`, error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+    startTasks(tasks, config);
+    res.json({ success: true });
 });
 
-// 通用停止任务接口
 app.post('/api/stop_task/:taskName', (req, res) => {
-    const taskName = req.params.taskName;
-    console.log(`收到停止任务请求: ${taskName}`);
-
     const config = loadConfig();
-    const tasks = config.tasks[taskName] || [];
-
-    try {
-        tasks.forEach((task) => {
-            const id = task.id;
-            const proc = activeProcesses[id];
-            if (proc && proc.pid) {
-                try {
-                    // 尝试平滑退出
-                    process.kill(-proc.pid, 'SIGTERM');
-                    console.log(`[${id}] 已发送停止信号`);
-                } catch (e) {
-                    if (!e.message.includes('ESRCH')) {
-                        console.error(`无法停止 ${id}:`, e.message);
-                    }
-                }
-                activeProcesses[id] = null;
-
-                // 针对特定 ROS 2 launch 任务进行强力清场，防止孤儿节点卡住端口
-                if (id === 'nav2' || taskName === 'navigation') {
-                    setTimeout(() => {
-                        exec('pkill -9 -f "navigation2|nav2|component_container_isolated|amcl|bt_navigator"');
-                    }, 500);
-                } else if (id === 'mapCartographer' || taskName === 'mapping') {
-                    setTimeout(() => {
-                        exec('pkill -9 -f "cartographer.launch.py|cartographer_node|cartographer_occupancy_grid"');
-                    }, 500);
-                } else if (id === 'foxglove' || taskName === 'startup') {
-                    setTimeout(() => {
-                        exec('pkill -9 -f "foxglove_bridge"');
-                    }, 500);
-                }
-            }
-        });
-
-        res.json({ success: true, message: `任务 [${taskName}] 已停止` });
-    } catch (error) {
-        console.error(`[${taskName}] 停止失败:`, error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+    stopTasks(config.tasks?.[req.params.taskName] || []);
+    res.json({ success: true });
 });
 
-// 状态查询接口 (针对特定任务类别)
 app.get('/api/task_status/:taskName', (req, res) => {
-    const taskName = req.params.taskName;
-    const config = loadConfig();
-    const tasks = config.tasks[taskName] || [];
-
-    const isRunning = tasks.some(task => !!activeProcesses[task.id]);
-    res.json({ isRunning });
+    const tasks = loadConfig().tasks?.[req.params.taskName] || [];
+    res.json({ isRunning: tasks.some((task) => activeProcesses.has(task.id)) });
 });
 
-// 兼容旧的接口 (映射到 mapping 任务)
 app.post('/api/start_mapping', (req, res) => res.redirect(307, '/api/run_task/mapping'));
 app.post('/api/stop_mapping', (req, res) => res.redirect(307, '/api/stop_task/mapping'));
 app.get('/api/mapping_status', (req, res) => res.redirect(301, '/api/task_status/mapping'));
+app.post('/api/stop_navigation', (req, res) => res.redirect(307, '/api/stop_task/navigation'));
+app.get('/api/navigation_status', (req, res) => res.redirect(301, '/api/task_status/navigation'));
 
-// 获取地图列表
 app.get('/api/list_maps', (req, res) => {
-    const config = loadConfig();
-    const mapsDir = config.maps_dir || config.save_map?.save_dir || '/tmp';
+    const directory = mapsDir(loadConfig());
     try {
-        if (!fs.existsSync(mapsDir)) {
-            return res.json({ maps: [] });
-        }
-        const files = fs.readdirSync(mapsDir)
-            .filter(f => f.endsWith('.yaml'))
-            .map(f => ({
-                name: f.replace('.yaml', ''),
-                path: path.join(mapsDir, f.replace('.yaml', ''))
+        const maps = fs.existsSync(directory) ? fs.readdirSync(directory)
+            .filter((file) => file.endsWith('.yaml'))
+            .map((file) => ({
+                name: path.basename(file, '.yaml'),
+                path: path.join(directory, path.basename(file, '.yaml'))
             }))
-            .sort((a, b) => a.name.localeCompare(b.name));
-        res.json({ maps: files });
+            .sort((a, b) => a.name.localeCompare(b.name)) : [];
+        res.json({ maps });
     } catch (err) {
-        console.error('[list_maps] 读取地图目录失败:', err);
         res.status(500).json({ maps: [], error: err.message });
     }
 });
 
-// 启动导航 (支持指定地图路径)
 app.post('/api/start_navigation', (req, res) => {
-    const { mapPath } = req.body;
-    if (!mapPath || mapPath.trim() === '') {
-        return res.status(400).json({ success: false, error: '请指定地图路径 (mapPath)' });
+    const { mapPath } = req.body || {};
+    if (typeof mapPath !== 'string' || !mapPath.trim()) {
+        return res.status(400).json({ success: false, error: '请选择地图' });
     }
 
     const config = loadConfig();
-    const tasks = config.tasks['navigation'] || [];
-    if (tasks.length === 0) {
-        return res.status(404).json({ success: false, error: '未找到 navigation 任务配置' });
-    }
+    const tasks = config.tasks?.navigation || [];
+    const selectedMap = path.isAbsolute(mapPath)
+        ? path.normalize(mapPath)
+        : path.resolve(mapsDir(config), mapPath);
 
-    try {
-        tasks.forEach((task) => {
-            const { id, command, args, delay, description } = task;
-            // 追加地图参数
-            const navArgs = [...args, `map:=${mapPath}.yaml`];
-
-            setTimeout(() => {
-                if (!activeProcesses[id]) {
-                    console.log(`[${id}] 启动导航: ${description}, 地图: ${mapPath}`);
-                    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-                    const fullCommand = `source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${command} ${navArgs.join(' ')}`;
-
-                    const proc = spawn('bash', ['-c', fullCommand], {
-                        detached: true,
-                        stdio: 'inherit'
-                    });
-
-                    proc.on('error', (err) => {
-                        console.error(`[${id}] 启动错误:`, err.message);
-                        activeProcesses[id] = null;
-                    });
-
-                    proc.on('exit', (code) => {
-                        console.log(`[${id}] 已退出 (代码: ${code})`);
-                        activeProcesses[id] = null;
-                    });
-
-                    activeProcesses[id] = proc;
-                } else {
-                    console.log(`[${id}] 导航已在运行中，忽略重复启动`);
-                }
-            }, delay || 0);
-        });
-
-        res.json({ success: true, message: `导航已启动，地图: ${mapPath}` });
-    } catch (error) {
-        console.error('[start_navigation] 启动失败:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+    startTasks(tasks, config, [`map:=${selectedMap}.yaml`]);
+    res.json({ success: true });
 });
 
-// 停止导航 / 查询导航状态 (复用通用接口)
-app.post('/api/stop_navigation', (req, res) => res.redirect(307, '/api/stop_task/navigation'));
-app.get('/api/navigation_status', (req, res) => res.redirect(301, '/api/task_status/navigation'));
-
-// 保存地图接口
 app.post('/api/save_map', (req, res) => {
-    const { mapName } = req.body;
-    if (!mapName || mapName.trim() === '') {
+    const { mapName } = req.body || {};
+    if (typeof mapName !== 'string' || !mapName.trim()) {
         return res.status(400).json({ success: false, error: '地图名称不能为空' });
     }
 
     const config = loadConfig();
-    const saveMapConfig = config.save_map;
-    if (!saveMapConfig || !saveMapConfig.command) {
-        return res.status(500).json({ success: false, error: 'ros_config.json 中未配置 save_map 命令' });
-    }
+    const directory = mapsDir(config);
+    const name = mapName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_').slice(0, 80);
+    const savePath = path.join(directory, name);
+    const saveMap = config.save_map;
 
-    const saveDir = saveMapConfig.save_dir || '/tmp';
-    const safeName = mapName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_');
-    const savePath = `${saveDir}/${safeName}`;
-    const args = [...saveMapConfig.args, savePath];
-    const fishbotSetup = '/home/jiang/workspace/fishbot/install/setup.bash';
-    const fullCommand = `mkdir -p "${saveDir}" && source /opt/ros/humble/setup.bash && [ -f ${fishbotSetup} ] && source ${fishbotSetup}; ${saveMapConfig.command} ${args.join(' ')}`;
+    try {
+        fs.mkdirSync(directory, { recursive: true });
+        const proc = runRos(saveMap.command, [...saveMap.args, savePath], config, false);
+        let responded = false;
 
-    console.log(`[save_map] 正在保存地图到: ${savePath}`);
-
-    const proc = spawn('bash', ['-c', fullCommand], { stdio: 'inherit' });
-    proc.on('exit', (code) => {
-        if (code === 0) {
-            console.log(`[save_map] 保存成功: ${savePath}`);
-            res.json({ success: true, message: `地图已保存至 ${savePath}`, path: savePath });
-        } else {
-            console.error(`[save_map] 保存失败，退出码: ${code}`);
-            res.status(500).json({ success: false, error: `保存失败，退出码: ${code}` });
-        }
-    });
-    proc.on('error', (err) => {
-        console.error('[save_map] 执行错误:', err.message);
+        proc.once('error', (err) => {
+            if (responded) return;
+            responded = true;
+            res.status(500).json({ success: false, error: err.message });
+        });
+        proc.once('exit', (code) => {
+            if (responded) return;
+            responded = true;
+            if (code === 0) {
+                res.json({ success: true, path: savePath });
+            } else {
+                res.status(500).json({ success: false, error: `保存失败，退出码: ${code}` });
+            }
+        });
+    } catch (err) {
         res.status(500).json({ success: false, error: err.message });
-    });
+    }
 });
 
-// 停止所有活跃进程的函数
-function stopAllProcesses() {
-    console.log('正在清理所有活跃进程...');
-    Object.keys(activeProcesses).forEach((id) => {
-        const proc = activeProcesses[id];
-        if (proc && proc.pid) {
-            try {
-                process.kill(-proc.pid);
-                console.log(`[${id}] 已停止`);
-            } catch (e) {
-                if (!e.message.includes('ESRCH')) {
-                    console.error(`无法停止 ${id}:`, e.message);
-                }
-            }
-            activeProcesses[id] = null;
-        }
-    });
+function shutdown() {
+    activeProcesses.forEach((proc, id) => stopTask(id));
+    process.exit(0);
 }
 
-// 监听进程退出信号
-process.on('SIGINT', () => {
-    stopAllProcesses();
-    process.exit();
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+const dist = path.join(__dirname, 'dist');
+if (fs.existsSync(dist)) app.use(express.static(dist));
+
+app.listen(3000, '0.0.0.0', () => {
+    console.log('后端已启动: http://localhost:3000');
 });
 
-process.on('SIGTERM', () => {
-    stopAllProcesses();
-    process.exit();
-});
-
-app.listen(port, () => {
-    console.log(`ROS 2 运行服务后端已启动并监听在 http://localhost:${port}`);
-});
+const config = loadConfig();
+startTasks(config.tasks?.startup || [], config);

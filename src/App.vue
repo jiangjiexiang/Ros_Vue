@@ -1,26 +1,84 @@
 <template>
   <div class="console-layout">
-    <!-- 顶部导航栏 -->
     <header class="console-header">
-      <h1>机器人中控台</h1>
-      <div class="status-indicator">
+      <div class="brand">
+        <div class="brand-mark"><UiIcon name="robot" :size="25" /></div>
+        <div>
+          <div class="brand-title">机器人控制台</div>
+          <div class="brand-subtitle">ROS 2 控制与监控</div>
+        </div>
+      </div>
+
+      <div class="header-context">
+        <span class="environment-badge">ROS 2 · HUMBLE</span>
+        <span class="header-divider"></span>
+        <div class="header-mode">
+          <span>当前模式</span>
+          <strong>{{ modeText }}</strong>
+        </div>
+      </div>
+
+      <button
+        class="header-connection"
+        :class="connectionState"
+        :disabled="connectionState === 'connecting'"
+        @click="isConnected ? handleDisconnect() : handleConnect()"
+      >
         <span class="status-dot" :class="connectionState"></span>
         <span>{{ statusText }}</span>
-      </div>
+        <UiIcon name="link" :size="16" />
+      </button>
     </header>
 
-    <!-- 主体三栏布局 -->
     <main class="console-body">
-      <!-- 左栏: 摇杆 -->
-      <section class="left-panel">
+      <aside class="left-panel panel-scroll">
+        <ConnectionPanel
+          :connectionState="connectionState"
+          :errorMessage="errorMessage"
+          :defaultUrl="DEFAULT_WS_URL"
+          @connect="handleConnect"
+          @disconnect="handleDisconnect"
+        />
+
         <JoystickControl
           :connected="isConnected"
           @velocity-change="onVelocityChange"
+          @stop="onStopMotion"
         />
-      </section>
 
-      <!-- 中栏: 地图 -->
+        <section class="card shortcut-card">
+          <div class="shortcut-title">
+            <UiIcon name="keyboard" :size="17" />
+            <span>键盘控制</span>
+          </div>
+          <div class="key-grid" aria-label="WASD 控制说明">
+            <span></span><kbd>W</kbd><span></span>
+            <kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+          </div>
+          <p>页面前台运行时生效，松开按键立即停止。</p>
+        </section>
+      </aside>
+
       <section class="center-panel">
+        <div class="metrics-grid">
+          <article class="metric-item">
+            <div class="metric-icon"><UiIcon name="activity" :size="18" /></div>
+            <div><span>运行状态</span><strong>{{ modeText }}</strong></div>
+          </article>
+          <article class="metric-item">
+            <div class="metric-icon"><UiIcon name="link" :size="18" /></div>
+            <div><span>可用话题</span><strong>{{ topics.length }} <small>个</small></strong></div>
+          </article>
+          <article class="metric-item">
+            <div class="metric-icon"><UiIcon name="map" :size="18" /></div>
+            <div><span>地图尺寸</span><strong>{{ mapSize }}</strong></div>
+          </article>
+          <article class="metric-item">
+            <div class="metric-icon"><UiIcon name="move" :size="18" /></div>
+            <div><span>底盘速度</span><strong>{{ linearSpeed }} <small>m/s</small></strong></div>
+          </article>
+        </div>
+
         <SlamMap
           ref="slamMapRef"
           :connected="isConnected"
@@ -41,17 +99,16 @@
           @waypoint-reached="onWaypointReached"
           @initial-pose-set="onInitialPoseSet"
         />
+
+        <div class="workspace-footer">
+          <span><i class="legend-dot robot"></i>机器人位置</span>
+          <span><i class="legend-dot scan"></i>激光扫描</span>
+          <span><i class="legend-dot path"></i>规划路径</span>
+          <span class="workspace-tip">滚轮缩放 · 拖动平移 · 双击设置目标</span>
+        </div>
       </section>
 
-      <!-- 右栏: 连接 + 电量 + 话题 -->
-      <section class="right-panel">
-        <ConnectionPanel
-          :connectionState="connectionState"
-          :errorMessage="errorMessage"
-          @connect="handleConnect"
-          @disconnect="handleDisconnect"
-        />
-
+      <aside class="right-panel panel-scroll">
         <BatteryStatus
           :percentage="batteryPercentage"
           :voltage="batteryVoltage"
@@ -63,66 +120,69 @@
           :odomData="odomData"
         />
 
-        <MappingControl 
-          :connected="isConnected" 
-          v-model:isMapping="mappingActive"
-          @mappingStarted="onMappingStarted"
-        />
+        <section class="card operations-card">
+          <div class="operations-heading">
+            <div>
+              <h2>任务控制</h2>
+            </div>
+            <span class="operation-state" :class="{ active: mappingActive || navigationActive }">
+              {{ mappingActive ? '建图中' : navigationActive ? '导航中' : '待机' }}
+            </span>
+          </div>
 
-        <NavigationControl
-          :connected="isConnected"
-          v-model:isNavigating="navigationActive"
-          v-model:isSettingPose="isSettingPose"
-          v-model:multiPointMode="multiPointMode"
-          :waypointCount="waypointQueue.length + (activeWaypoint ? 1 : 0)"
-          @clear-waypoints="clearWaypoints"
-        />
+          <div class="operation-tabs" role="tablist">
+            <button
+              :class="{ active: activeOperation === 'mapping' }"
+              role="tab"
+              @click="activeOperation = 'mapping'"
+            >
+              <UiIcon name="map" :size="16" />建图
+              <i v-if="mappingActive"></i>
+            </button>
+            <button
+              :class="{ active: activeOperation === 'navigation' }"
+              role="tab"
+              @click="activeOperation = 'navigation'"
+            >
+              <UiIcon name="route" :size="16" />导航
+              <i v-if="navigationActive"></i>
+            </button>
+          </div>
 
-        <div class="card" v-if="isConnected">
+          <MappingControl
+            v-show="activeOperation === 'mapping'"
+            :connected="isConnected"
+            v-model:isMapping="mappingActive"
+            @mappingStarted="onMappingStarted"
+          />
+          <NavigationControl
+            v-show="activeOperation === 'navigation'"
+            :connected="isConnected"
+            v-model:isNavigating="navigationActive"
+            v-model:isSettingPose="isSettingPose"
+            v-model:multiPointMode="multiPointMode"
+            :waypointCount="waypointQueue.length + (activeWaypoint ? 1 : 0)"
+            @navigationStarted="activeOperation = 'navigation'"
+            @clear-waypoints="clearWaypoints"
+          />
+        </section>
+
+        <section class="card layer-card">
           <div class="card-header">
-            图层控制
+            <span><UiIcon name="layers" :size="17" />地图图层</span>
+            <small>{{ Object.values(mapLayers).filter(Boolean).length }}/5</small>
           </div>
           <div class="card-body">
             <div class="layer-controls">
-              <div class="layer-item">
-                <span>显示地图</span>
-                <label class="switch">
-                  <input type="checkbox" v-model="mapLayers.map">
-                  <span class="slider"></span>
-                </label>
-              </div>
-              <div class="layer-item">
-                <span>显示激光</span>
-                <label class="switch">
-                  <input type="checkbox" v-model="mapLayers.scan">
-                  <span class="slider"></span>
-                </label>
-              </div>
-              <div class="layer-item">
-                <span>显示机器人</span>
-                <label class="switch">
-                  <input type="checkbox" v-model="mapLayers.robot">
-                  <span class="slider"></span>
-                </label>
-              </div>
-              <div class="layer-item">
-                <span>显示路径</span>
-                <label class="switch">
-                  <input type="checkbox" v-model="mapLayers.path">
-                  <span class="slider"></span>
-                </label>
-              </div>
-              <div class="layer-item">
-                <span>显示目标点</span>
-                <label class="switch">
-                  <input type="checkbox" v-model="mapLayers.goal">
-                  <span class="slider"></span>
-                </label>
-              </div>
+              <label v-for="layer in layerOptions" :key="layer.key" class="layer-chip" :class="layer.key">
+                <input type="checkbox" v-model="mapLayers[layer.key]">
+                <span class="layer-check"></span>
+                <span>{{ layer.label }}</span>
+              </label>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </aside>
     </main>
   </div>
 </template>
@@ -130,6 +190,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useFoxglove } from './composables/useFoxglove.js'
+import { API_BASE, DEFAULT_WS_URL } from './config.js'
 import JoystickControl from './components/JoystickControl.vue'
 import BatteryStatus from './components/BatteryStatus.vue'
 import SlamMap from './components/SlamMap.vue'
@@ -137,11 +198,18 @@ import ConnectionPanel from './components/ConnectionPanel.vue'
 import TelemetryPanel from './components/TelemetryPanel.vue'
 import MappingControl from './components/MappingControl.vue'
 import NavigationControl from './components/NavigationControl.vue'
+import UiIcon from './components/UiIcon.vue'
 
 const foxglove = useFoxglove()
 const slamMapRef = ref(null)
-const API_BASE = `http://${window.location.hostname}:3000/api`
-const DEFAULT_WS_URL = `ws://${window.location.hostname}:8765`
+const activeOperation = ref('mapping')
+const layerOptions = [
+  { key: 'map', label: '地图' },
+  { key: 'scan', label: '激光' },
+  { key: 'robot', label: '机器人' },
+  { key: 'path', label: '路径' },
+  { key: 'goal', label: '目标' }
+]
 
 const TOPIC_DEFAULTS = {
   cmd_vel: '/cmd_vel',
@@ -212,6 +280,21 @@ let imuSubId = null
 const connectionState = computed(() => foxglove.connectionState.value)
 const errorMessage = computed(() => foxglove.errorMessage.value)
 const isConnected = computed(() => connectionState.value === 'connected')
+const modeText = computed(() => {
+  if (!isConnected.value) return '离线'
+  if (isSettingPose.value) return '初始定位'
+  if (mappingActive.value) return '建图作业'
+  if (navigationActive.value) return multiPointMode.value ? '多点导航' : '自主导航'
+  return '待机监控'
+})
+const mapSize = computed(() => {
+  const info = mapData.value?.info
+  return info ? `${info.width} × ${info.height}` : '--'
+})
+const linearSpeed = computed(() => {
+  const speed = odomData.value?.twist?.twist?.linear?.x
+  return Number.isFinite(speed) ? Math.abs(speed).toFixed(2) : '0.00'
+})
 
 const statusText = computed(() => {
   switch (connectionState.value) {
@@ -229,7 +312,7 @@ function handleConnect(url = DEFAULT_WS_URL) {
 }
 
 function onMappingStarted() {
-  // 建图开始时自动重置地图视图
+  activeOperation.value = 'mapping'
   slamMapRef.value?.resetView()
 }
 
@@ -250,6 +333,7 @@ function clearAllData() {
 }
 
 function handleDisconnect() {
+  onStopMotion()
   foxglove.disconnect()
   cmdVelChannelId = null
   goalPoseChannelId = null
@@ -506,6 +590,20 @@ const keyboardState = {
 }
 let keyboardInterval = null
 
+function onStopMotion() {
+  keyboardState.w = false
+  keyboardState.a = false
+  keyboardState.s = false
+  keyboardState.d = false
+  if (keyboardInterval) {
+    clearInterval(keyboardInterval)
+    keyboardInterval = null
+  }
+  if (cmdVelChannelId && isConnected.value) {
+    foxglove.sendTwist(cmdVelChannelId, 0, 0)
+  }
+}
+
 // 线速度上限与角速度上限 (可根据情况修改)
 const MAX_LINEAR_VEL = 0.5
 const MAX_ANGULAR_VEL = 1.0
@@ -549,13 +647,7 @@ function handleKeyUp(e) {
     
     // 如果所有键都松开了，停止循环并发送一次 0 速度
     if (!keyboardState.w && !keyboardState.a && !keyboardState.s && !keyboardState.d) {
-      if (keyboardInterval) {
-        clearInterval(keyboardInterval)
-        keyboardInterval = null
-      }
-      if (cmdVelChannelId && isConnected.value) {
-        foxglove.sendTwist(cmdVelChannelId, 0, 0)
-      }
+      onStopMotion()
     }
   }
 }
@@ -565,12 +657,14 @@ onMounted(() => {
   handleConnect()
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
+  window.addEventListener('blur', onStopMotion)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('keyup', handleKeyUp)
-  if (keyboardInterval) clearInterval(keyboardInterval)
+  window.removeEventListener('blur', onStopMotion)
+  onStopMotion()
 })
 
 </script>

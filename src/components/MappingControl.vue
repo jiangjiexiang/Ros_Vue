@@ -1,59 +1,44 @@
 <template>
-  <div class="card" v-if="connected">
-    <div class="card-header">
-      建图控制
+  <section class="control-section">
+    <p class="control-description">启动配置的建图任务，在地图区域实时查看环境扫描结果。</p>
+    <button
+      v-if="!isMapping"
+      class="btn btn-connect"
+      :disabled="!connected || isLoading"
+      @click="startMapping"
+    >
+      <UiIcon name="play" :size="15" />
+      {{ isLoading ? '正在启动…' : '开始建图' }}
+    </button>
+    <button v-else class="btn btn-disconnect" :disabled="isLoading" @click="stopMapping">
+      <UiIcon name="stop" :size="15" />
+      {{ isLoading ? '正在停止…' : '停止建图' }}
+    </button>
+
+    <div class="process-status" :class="{ active: isMapping }">
+      <i></i>
+      <span>{{ !connected ? '等待机器人连接' : isMapping ? '建图节点运行中' : '建图节点未运行' }}</span>
     </div>
-    <div class="card-body">
-      <div class="mapping-controls">
-        <button 
-          v-if="!isMapping"
-          class="btn btn-connect mapping-btn" 
-          @click="startMapping"
-          :disabled="isLoading"
-        >
-          {{ isLoading ? '正在启动...' : '开始建图' }}
-        </button>
-        <button 
-          v-else
-          class="btn btn-disconnect mapping-btn" 
-          @click="stopMapping"
-          :disabled="isLoading"
-        >
-          {{ isLoading ? '正在停止...' : '停止建图' }}
-        </button>
-      </div>
-      
-      <div class="mapping-status mt-2 text-sm text-gray-400">
-        <span v-if="isMapping" class="text-green-400">● 建图节点运行中</span>
-        <span v-else>○ 建图节点未运行</span>
-      </div>
-      
-      <div v-if="errorMsg" class="error-message mt-2">
-        {{ errorMsg }}
-      </div>
-    </div>
-  </div>
+    <div v-if="errorMsg" class="error-message mt-2">{{ errorMsg }}</div>
+  </section>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { API_BASE } from '../config.js'
+import UiIcon from './UiIcon.vue'
 
-const props = defineProps({
-  connected: Boolean
-})
-
+const props = defineProps({ connected: Boolean, isMapping: Boolean })
 const emit = defineEmits(['mappingStarted', 'update:isMapping'])
-
-const isMapping = ref(false)
+const isMapping = ref(props.isMapping)
 const isLoading = ref(false)
 const errorMsg = ref('')
-
-const API_BASE = `http://${window.location.hostname}:3000/api`
 let statusTimer = null
 
 async function checkStatus() {
   try {
     const res = await fetch(`${API_BASE}/mapping_status`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     isMapping.value = data.isRunning
     emit('update:isMapping', data.isRunning)
@@ -69,15 +54,12 @@ async function startMapping() {
   try {
     const res = await fetch(`${API_BASE}/start_mapping`, { method: 'POST' })
     const data = await res.json()
-    if (data.success) {
-      isMapping.value = true
-      emit('update:isMapping', true)
-      emit('mappingStarted')
-    } else {
-      errorMsg.value = data.error || '启动失败'
-    }
+    if (!data.success) throw new Error(data.error || '启动失败')
+    isMapping.value = true
+    emit('update:isMapping', true)
+    emit('mappingStarted')
   } catch (err) {
-    errorMsg.value = '无法连接到本地控制服务'
+    errorMsg.value = err.message || '无法连接到本地控制服务'
   } finally {
     isLoading.value = false
   }
@@ -89,18 +71,17 @@ async function stopMapping() {
   try {
     const res = await fetch(`${API_BASE}/stop_mapping`, { method: 'POST' })
     const data = await res.json()
-    if (data.success) {
-      isMapping.value = false
-      emit('update:isMapping', false)
-    } else {
-      errorMsg.value = data.error || '停止失败'
-    }
+    if (!data.success) throw new Error(data.error || '停止失败')
+    isMapping.value = false
+    emit('update:isMapping', false)
   } catch (err) {
-    errorMsg.value = '无法连接到本地控制服务'
+    errorMsg.value = err.message || '无法连接到本地控制服务'
   } finally {
     isLoading.value = false
   }
 }
+
+watch(() => props.isMapping, (value) => { isMapping.value = value })
 
 onMounted(() => {
   checkStatus()
@@ -111,19 +92,3 @@ onUnmounted(() => {
   if (statusTimer) clearInterval(statusTimer)
 })
 </script>
-
-<style scoped>
-.mapping-controls {
-  display: flex;
-  justify-content: center;
-}
-.mapping-btn {
-  width: 100%;
-  font-weight: 600;
-  padding: 12px;
-}
-.mt-2 { margin-top: 8px; }
-.text-sm { font-size: 0.85rem; }
-.text-gray-400 { color: #9ca3af; }
-.text-green-400 { color: #34d399; }
-</style>

@@ -81,6 +81,7 @@ function disconnect() {
 function cleanup() {
     availableChannels.clear()
     subscriptionCallbacks.clear()
+    subscriptionIdToChannelId.clear()
     clientChannels.clear()
     nextClientChannelId = 1
     nextSubscriptionId = 1
@@ -570,6 +571,7 @@ function subscribe(topicName, callback) {
  */
 function unsubscribe(subscriptionId) {
     subscriptionCallbacks.delete(subscriptionId)
+    subscriptionIdToChannelId.delete(subscriptionId)
 
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
