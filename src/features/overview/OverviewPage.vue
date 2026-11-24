@@ -392,7 +392,7 @@ function selectAlert(alert) {
   min-height: 100%;
   margin: 0 auto;
   padding: 24px;
-  overflow: auto;
+  overflow: visible;
   color: var(--text-primary);
 }
 .overview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }

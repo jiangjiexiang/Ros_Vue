@@ -184,7 +184,7 @@ button:disabled, input:disabled, select:disabled {
 .shell-content {
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .shell-content > .console-body,
