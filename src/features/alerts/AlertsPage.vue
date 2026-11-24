@@ -5,7 +5,17 @@
         <div class="title-line">
           <h1 id="alerts-title">巡检告警</h1>
         </div>
-        <p>确认异常、记录处理结果，并回溯关联任务与巡检点。</p>
+        <p>确认异常、批量处理待确认告警，并回溯关联任务或实时工作台。</p>
+      </div>
+      <div class="header-actions-bar">
+        <button
+          type="button"
+          class="bulk-ack-button"
+          :disabled="counts.pending === 0"
+          @click="confirmAllPending"
+        >
+          批量确认待处理（{{ counts.pending }}）
+        </button>
       </div>
     </header>
 
@@ -17,6 +27,7 @@
     </section>
 
     <form class="filter-panel" @submit.prevent>
+      <label><span>关键词</span><input v-model.trim="filters.keyword" type="search" placeholder="标题、描述、设备或编号"></label>
       <label><span>告警等级</span><select v-model="filters.level"><option value="">全部等级</option><option v-for="option in alertLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
       <label><span>处理状态</span><select v-model="filters.status"><option value="">全部状态</option><option v-for="option in alertStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
       <label><span>机器狗</span><select v-model="filters.robotId"><option value="">全部机器狗</option><option v-for="robot in robots" :key="robot.id" :value="robot.id">{{ robot.name }}</option></select></label>
@@ -70,8 +81,10 @@
           <footer class="alert-actions">
             <button v-if="alert.status === 'pending'" class="action-primary" type="button" @click="confirmAlert(alert)">确认告警</button>
             <button v-if="alert.status === 'acknowledged'" class="action-primary" type="button" @click="openProcess(alert)">填写处理结果</button>
-            <button type="button" @click="openRecord(alert)">任务详情</button>
-            <button type="button" @click="openPoint(alert)">定位巡检点 <span aria-hidden="true">→</span></button>
+            <button v-if="alert.recordId" type="button" @click="openRecord(alert)">任务详情</button>
+            <button type="button" @click="openPoint(alert)">
+              {{ alert.recordId ? '定位巡检点' : '前往工作台' }} <span aria-hidden="true">→</span>
+            </button>
           </footer>
         </article>
       </div>
@@ -95,10 +108,11 @@
 </template>
 
 <script setup>
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { formatDateTime } from '../records/utils.js'
-import { alertSession, acknowledgeAlert, resolveAlert } from './demoAlertStore.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
+import { showToast } from '../../stores/toastStore.js'
 import {
   alertLevelOptions,
   alertStatusOptions,
@@ -110,15 +124,29 @@ import {
 } from './utils.js'
 
 const router = useRouter()
-const filters = reactive({ level: '', status: '', robotId: '' })
+const {
+  alerts: alertSession,
+  acknowledgeAlert,
+  bulkAcknowledgeAlerts,
+  resolveAlert,
+  initInspectionStore
+} = useInspectionStore()
+
+const filters = reactive({ keyword: '', level: '', status: '', robotId: '' })
 const feedback = ref('')
 const processingAlert = ref(null)
 const resolution = ref('fixed')
 const resolutionNote = ref('')
 const formError = ref('')
 const noteInputRef = ref(null)
-const robots = [...new Map(alertSession.value.map((alert) => [alert.robotId, { id: alert.robotId, name: alert.robotName }])).values()]
-const filteredAlerts = computed(() => filterAlerts(alertSession.value, filters))
+const robots = computed(() => [...new Map(alertSession.value.map((alert) => [alert.robotId, { id: alert.robotId, name: alert.robotName }])).values()])
+const filteredAlerts = computed(() => {
+  const kw = filters.keyword.trim().toLowerCase()
+  return filterAlerts(alertSession.value, filters).filter((alert) => {
+    if (!kw) return true
+    return [alert.id, alert.title, alert.description, alert.robotName, alert.scene].join(' ').toLowerCase().includes(kw)
+  })
+})
 const hasActiveFilters = computed(() => Object.values(filters).some(Boolean))
 const counts = computed(() => ({
   pending: alertSession.value.filter((alert) => alert.status === 'pending').length,
@@ -128,11 +156,22 @@ const counts = computed(() => ({
 }))
 
 function resetFilters() {
-  Object.assign(filters, { level: '', status: '', robotId: '' })
+  Object.assign(filters, { keyword: '', level: '', status: '', robotId: '' })
 }
 
 function confirmAlert(alert) {
-  if (acknowledgeAlert(alert.id)) feedback.value = `告警 ${alert.id} 已确认，请继续填写处理结果。`
+  if (acknowledgeAlert(alert.id)) {
+    feedback.value = `告警 ${alert.id} 已确认，请继续填写处理结果。`
+    showToast(`已确认告警 ${alert.id}`, 'info')
+  }
+}
+
+function confirmAllPending() {
+  const count = bulkAcknowledgeAlerts()
+  if (count > 0) {
+    feedback.value = `已批量确认 ${count} 条待处理告警。`
+    showToast(`已批量确认 ${count} 条告警`, 'success')
+  }
 }
 
 function openProcess(alert) {
@@ -163,15 +202,27 @@ function submitResolution() {
 }
 
 function openRecord(alert) {
+  if (!alert.recordId) {
+    router.push('/inspection')
+    return
+  }
   router.push({ path: `/records/${encodeURIComponent(alert.recordId)}`, query: { alertId: alert.id } })
 }
 
 function openPoint(alert) {
+  if (!alert.recordId) {
+    router.push('/inspection')
+    return
+  }
   router.push({
     path: `/records/${encodeURIComponent(alert.recordId)}`,
     query: { alertId: alert.id, pointId: alert.pointId }
   })
 }
+
+onMounted(() => {
+  initInspectionStore()
+})
 </script>
 
 <style scoped>
@@ -191,10 +242,12 @@ h1 { font-size: 1.3rem; font-weight: 650; }
 .danger-text { color: var(--danger) !important; }
 .warning-text { color: var(--warning) !important; }
 .success-text { color: var(--success) !important; }
-.filter-panel { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)) auto; gap: 12px; align-items: end; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-card); }
-.filter-panel label > span, .process-dialog label > span { display: block; margin-bottom: 7px; color: var(--text-muted); font-size: 0.65rem; }
-select, textarea { width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--bg-secondary); font-size: 0.7rem; }
-select { height: 36px; padding: 0 10px; }
+.filter-panel { display: grid; grid-template-columns: minmax(180px, 1.3fr) repeat(3, minmax(140px, 1fr)) auto; gap: 12px; align-items: end; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-card); }
+.filter-panel label > span, .process-dialog label > span { display: block; margin-bottom: 7px; color: var(--text-muted); font-size: var(--text-xs); }
+input[type="search"], select, textarea { width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--bg-secondary); font-size: var(--text-sm); }
+input[type="search"], select { height: 36px; padding: 0 10px; }
+.bulk-ack-button { height: 36px; padding: 0 14px; border: 1px solid rgba(34, 211, 238, 0.35); border-radius: var(--radius-sm); color: var(--accent-primary); background: rgba(34, 211, 238, 0.08); font-size: var(--text-xs); font-weight: 500; cursor: pointer; }
+.bulk-ack-button:disabled { opacity: 0.45; cursor: not-allowed; }
 .filter-panel > button, .empty-state button { height: 36px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-secondary); background: var(--bg-soft); font-size: 0.7rem; cursor: pointer; }
 .filter-panel > button:hover:not(:disabled), .empty-state button:hover { border-color: var(--border-strong); color: var(--text-primary); }
 .feedback { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border: 1px solid rgba(52, 211, 153, 0.22); border-radius: var(--radius-sm); color: var(--success); background: rgba(52, 211, 153, 0.06); font-size: 0.7rem; }

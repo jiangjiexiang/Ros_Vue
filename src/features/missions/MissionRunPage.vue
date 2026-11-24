@@ -4,11 +4,18 @@
       <div class="mission-heading">
         <span class="mission-eyebrow">MISSION EXECUTION</span>
         <h1>{{ mission?.name || '任务执行' }}</h1>
-        <p>查看巡检顺序、当前阶段和状态日志，控制任务执行流程。</p>
+        <p>支持真实 ROS 导航下发与离线模拟演练，实时查看相机画面、点位进度与状态日志。</p>
       </div>
       <div class="mission-header-actions">
         <button class="mission-button" @click="goBack">← 返回列表</button>
         <button v-if="mission" class="mission-button" :disabled="isActive" @click="openEdit">编辑配置</button>
+        <button
+          v-if="mission && ['completed', 'aborted'].includes(mission.status)"
+          class="mission-button primary"
+          @click="openRecords"
+        >
+          查看巡检记录 →
+        </button>
       </div>
     </header>
 
@@ -30,12 +37,12 @@
         <article class="summary-item">
           <span>执行机器狗</span>
           <strong>{{ mission.robotName || '未配置' }}</strong>
-          <small>任务执行设备</small>
+          <small>{{ isConnected ? 'ROS 在线 · 可下发导航' : 'ROS 离线' }}</small>
         </article>
         <article class="summary-item">
           <span>地图场景</span>
           <strong>{{ mission.map?.name || '未配置' }}</strong>
-          <small>任务地图场景</small>
+          <small>目标容差 {{ mission.navigation.goalTolerance }} m</small>
         </article>
         <article class="summary-item">
           <span>巡检进度</span>
@@ -81,6 +88,9 @@
                   <span v-if="mission.run.phase === 'inspecting'" class="mono">
                     {{ Math.min(mission.run.elapsedSeconds, waypoint.dwellSeconds) }} / {{ waypoint.dwellSeconds }} s
                   </span>
+                  <span v-else-if="runMode === 'ros' && remainingDistance !== null" class="mono">
+                    剩余 {{ remainingDistance.toFixed(2) }} m
+                  </span>
                 </div>
               </div>
             </article>
@@ -93,12 +103,39 @@
         </section>
 
         <aside class="run-sidebar">
+          <CameraPanel
+            title="机载实时画面"
+            :message="cameraPrimary"
+            :connected="isConnected"
+            :topic="cameraPrimary?.topic || robotTopics.camera_primary"
+          />
+
           <section class="mission-panel">
             <div class="panel-heading">
               <h2>执行控制</h2>
-              <span>任务状态</span>
+              <span class="mono">{{ isConnected ? `${linearSpeed} m/s` : '离线' }}</span>
             </div>
             <div class="panel-body run-controls">
+              <div class="mode-switch" role="group" aria-label="执行模式选择">
+                <button
+                  type="button"
+                  :class="{ active: runMode === 'ros' }"
+                  :disabled="isActive || !isConnected"
+                  :title="isConnected ? '向机器狗下发真实 /goal_pose' : '请先连接机器狗'"
+                  @click="runMode = 'ros'"
+                >
+                  真实 ROS 下发
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: runMode === 'demo' }"
+                  :disabled="isActive"
+                  @click="runMode = 'demo'"
+                >
+                  离线模拟演练
+                </button>
+              </div>
+
               <div class="overall-progress">
                 <div><strong>{{ progress.percent }}%</strong><span>{{ progress.completed }} / {{ progress.total }} 点次</span></div>
                 <div class="progress-track" role="progressbar" :aria-valuenow="progress.percent" aria-valuemin="0" aria-valuemax="100">
@@ -123,12 +160,24 @@
                 <button v-else class="mission-button primary" @click="startExecution">
                   <UiIcon name="play" :size="14" />重新执行
                 </button>
+
+                <button
+                  v-if="runMode === 'ros' && mission.status === 'running' && mission.run.phase === 'navigating'"
+                  class="mission-button"
+                  @click="confirmArrived"
+                >
+                  <UiIcon name="check" :size="14" />手动确认到达
+                </button>
+
                 <button v-if="isActive" class="mission-button danger" @click="abortExecution">
                   <UiIcon name="stop" :size="14" />终止任务
                 </button>
               </div>
-              <p v-if="!mission.waypoints.length" class="form-hint">请先添加至少一个巡检点。</p>
-              <p class="control-note">导航阶段计时 {{ DEMO_NAVIGATION_SECONDS }} 秒，动作阶段使用点位停留时间；暂停后保留当前计时。</p>
+              <p class="control-note">
+                {{ runMode === 'ros'
+                  ? `真实模式：自动发送 /goal_pose，到达容差 ${mission.navigation.goalTolerance} m 内或手动确认后进入点位动作。`
+                  : `模拟模式：导航阶段固定计时 ${DEMO_NAVIGATION_SECONDS} 秒，动作阶段按点位停留时间倒计时。` }}
+              </p>
             </div>
           </section>
 
@@ -162,7 +211,7 @@
           </div>
         </div>
         <div v-else class="empty-state log-empty">
-          <p>开始任务后，这里会显示暂停、继续、点位推进和终止等状态记录。</p>
+          <p>开始任务后，这里会显示下发目标点、到点动作、暂停和归档记录。</p>
         </div>
       </section>
     </template>
@@ -171,7 +220,12 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import CameraPanel from '../../components/CameraPanel.vue'
 import UiIcon from '../../components/UiIcon.vue'
+import { useRosSessionStore } from '../../stores/rosSessionStore.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
+import { confirmDialog, showToast } from '../../stores/toastStore.js'
 import {
   DEMO_NAVIGATION_SECONDS,
   getActionLabel,
@@ -187,22 +241,42 @@ const props = defineProps({
   id: { type: String, default: '' }
 })
 const emit = defineEmits(['navigate'])
+const router = useRouter()
 const { routeMissionId, navigate } = useMissionNavigation(props, emit)
 const {
   missions,
   storageError,
+  initMissionsFromServer,
   startMission,
   pauseMission,
   abortMission,
-  tickMission
+  tickMission,
+  completeCurrentWaypointNavigation,
+  appendRunLog
 } = useMissionStore()
+const {
+  isConnected,
+  cameraPrimary,
+  robotTopics,
+  linearSpeed,
+  navFeedback,
+  sendGoalPose
+} = useRosSessionStore()
+const { pushRuntimeAlert } = useInspectionStore()
+
 const errorMessage = ref('')
+const runMode = ref(isConnected.value ? 'ros' : 'demo')
 let timer = null
+let lastDispatchedKey = ''
 
 const mission = computed(() => missions.value.find((item) => item.id === routeMissionId.value))
 const isActive = computed(() => ['running', 'paused'].includes(mission.value?.status))
 const progress = computed(() => mission.value ? getMissionProgress(mission.value) : { completed: 0, total: 0, percent: 0 })
 const currentWaypoint = computed(() => mission.value?.waypoints[mission.value.run.currentWaypointIndex] || null)
+const remainingDistance = computed(() => {
+  const dist = navFeedback.value?.distance_remaining
+  return Number.isFinite(dist) ? dist : null
+})
 const displayCycle = computed(() => {
   if (!mission.value) return 0
   if (mission.value.status === 'pending') return 0
@@ -226,13 +300,36 @@ const phaseText = computed(() => {
   return `${prefix}等待状态更新`
 })
 
-function startExecution() {
+function dispatchCurrentGoalIfNeeded() {
+  if (runMode.value !== 'ros' || !isConnected.value) return
+  if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
+  const wp = currentWaypoint.value
+  if (!wp) return
+  const key = `${mission.value.id}:${mission.value.run.currentCycle}:${mission.value.run.currentWaypointIndex}`
+  if (lastDispatchedKey === key) return
+  lastDispatchedKey = key
+  sendGoalPose(wp.pose.x, wp.pose.y, wp.pose.yaw || 0)
+  appendRunLog(mission.value, `已下发导航目标“${wp.name}” (${wp.pose.x.toFixed(2)}, ${wp.pose.y.toFixed(2)})。`)
+}
+
+async function startExecution() {
   errorMessage.value = ''
+  if (runMode.value === 'ros' && !isConnected.value) {
+    errorMessage.value = '当前机器狗未连接，无法使用真实 ROS 执行；请先连接或切换至离线模拟演练。'
+    return
+  }
   if (['completed', 'aborted'].includes(mission.value?.status)) {
-    if (!window.confirm('重新执行将清空当前执行进度和日志，是否继续？')) return
+    const ok = await confirmDialog({
+      title: '重新执行任务',
+      message: '重新执行将清空当前执行进度和日志，是否继续？',
+      confirmText: '重新执行'
+    })
+    if (!ok) return
   }
   try {
+    lastDispatchedKey = ''
     startMission(mission.value.id)
+    dispatchCurrentGoalIfNeeded()
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -247,8 +344,19 @@ function pauseExecution() {
   }
 }
 
-function abortExecution() {
-  if (!window.confirm(`确定终止任务“${mission.value.name}”吗？当前执行进度会保留在日志中。`)) return
+function confirmArrived() {
+  if (!mission.value) return
+  completeCurrentWaypointNavigation(mission.value.id, '（操作员手动确认到达）')
+}
+
+async function abortExecution() {
+  const ok = await confirmDialog({
+    title: '终止巡检任务',
+    message: `确定终止任务“${mission.value.name}”吗？已完成进度将自动归档至巡检记录。`,
+    confirmText: '确认终止',
+    danger: true
+  })
+  if (!ok) return
   errorMessage.value = ''
   try {
     abortMission(mission.value.id)
@@ -303,12 +411,62 @@ function openEdit() {
   navigate(MISSION_PATHS.edit(mission.value.id), mission.value.id)
 }
 
-watch(routeMissionId, () => { errorMessage.value = '' })
+function openRecords() {
+  router.push('/records')
+}
+
+watch(routeMissionId, () => {
+  errorMessage.value = ''
+  lastDispatchedKey = ''
+})
+
+watch(isConnected, (connected) => {
+  if (!isActive.value) {
+    runMode.value = connected ? 'ros' : 'demo'
+  }
+})
+
+watch(() => [mission.value?.status, mission.value?.run?.phase, mission.value?.run?.currentWaypointIndex], () => {
+  dispatchCurrentGoalIfNeeded()
+})
+
+watch(remainingDistance, (dist) => {
+  if (runMode.value !== 'ros' || dist === null) return
+  if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
+  if (mission.value.run.elapsedSeconds < 2) return
+  const tolerance = Math.max(0.1, Number(mission.value.navigation?.goalTolerance || 0.25))
+  if (dist <= tolerance) {
+    completeCurrentWaypointNavigation(mission.value.id, `（距离目标 ${dist.toFixed(2)} m，已到达）`)
+  }
+})
+
 onMounted(() => {
+  initMissionsFromServer()
   timer = window.setInterval(() => {
-    if (mission.value?.status === 'running') tickMission(mission.value.id)
+    if (mission.value?.status === 'running') {
+      tickMission(mission.value.id, {
+        waitForRosArrival: runMode.value === 'ros',
+        onTimeout: (m, wp) => {
+          pushRuntimeAlert({
+            dedupeKey: `nav-timeout-${m.id}-${wp.id}`,
+            robotId: m.robotId || 'runtime',
+            robotName: m.robotName || '机器狗',
+            scene: m.map?.name || '巡检任务',
+            level: 'critical',
+            title: `巡检点导航超时：${wp.name}`,
+            description: `任务“${m.name}”前往“${wp.name}”超过 ${m.navigation.navigationTimeoutSeconds} 秒未到达。`,
+            recommendation: '请检查路径障碍物、定位状态及 Nav2 规划器日志。',
+            reading: `${m.navigation.navigationTimeoutSeconds}s`,
+            threshold: '单点导航超时阈值'
+          })
+          abortMission(m.id, `前往“${wp.name}”导航超时，任务已自动中止并生成告警。`)
+          showToast(`导航超时：已中止任务并生成告警`, 'error')
+        }
+      })
+    }
   }, 1000)
 })
+
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
 })
@@ -318,15 +476,24 @@ onUnmounted(() => {
 <style scoped>
 .run-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .summary-item { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 7px; min-height: 91px; padding: 13px 15px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-card); }
-.summary-item > span { color: var(--text-muted); font-size: 0.63rem; }
-.summary-item > strong { overflow: hidden; max-width: 100%; color: var(--text-primary); font-size: 0.8rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.summary-item > small { color: var(--text-muted); font-size: 0.59rem; }
-.run-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.7fr); align-items: start; gap: 16px; }
-.run-sidebar { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.summary-item > span { color: var(--text-muted); font-size: var(--text-xs); }
+.summary-item > strong { overflow: hidden; max-width: 100%; color: var(--text-primary); font-size: 0.92rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.summary-item > small { color: var(--text-muted); font-size: var(--text-xs); }
+.run-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.8fr); align-items: start; gap: 16px; }
+.run-sidebar { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.mode-switch {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
+  border: 1px solid var(--border-color); border-radius: 8px; background: rgba(2, 8, 18, 0.35);
+}
+.mode-switch button {
+  height: 32px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent;
+  font-size: var(--text-xs); cursor: pointer;
+}
+.mode-switch button.active { color: var(--accent-primary); background: var(--bg-elevated); font-weight: 600; }
 .point-timeline { padding: 17px; }
 .run-point { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
 .timeline-marker { display: flex; flex-direction: column; align-items: center; }
-.timeline-marker > span { display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--text-muted); background: var(--bg-card); font-family: var(--font-mono); font-size: 0.65rem; }
+.timeline-marker > span { display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--text-muted); background: var(--bg-card); font-family: var(--font-mono); font-size: var(--text-xs); }
 .timeline-marker > i { width: 1px; min-height: 25px; flex: 1; margin: 5px 0; background: var(--border-color); }
 .run-point.done .timeline-marker > span { border-color: rgba(52, 211, 153, 0.35); color: var(--success); background: rgba(52, 211, 153, 0.07); }
 .run-point.current .timeline-marker > span { border-color: rgba(34, 211, 238, 0.45); color: var(--accent-primary); background: rgba(34, 211, 238, 0.08); }
@@ -334,50 +501,43 @@ onUnmounted(() => {
 .run-point.current .run-point-content { border-color: rgba(34, 211, 238, 0.3); background: rgba(34, 211, 238, 0.04); }
 .run-point.done .run-point-content { border-color: rgba(52, 211, 153, 0.18); }
 .run-point-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.run-point-heading strong { display: block; color: var(--text-primary); font-size: 0.76rem; font-weight: 600; }
-.point-pose { display: block; margin-top: 6px; color: var(--text-muted); font-size: 0.59rem; }
-.point-state { flex: 0 0 auto; color: var(--text-muted); font-size: 0.62rem; }
+.run-point-heading strong { display: block; color: var(--text-primary); font-size: var(--text-sm); font-weight: 600; }
+.point-pose { display: block; margin-top: 5px; color: var(--text-muted); font-size: var(--text-xs); }
+.point-state { flex: 0 0 auto; color: var(--text-muted); font-size: var(--text-xs); }
 .run-point.current .point-state { color: var(--accent-primary); }
 .run-point.done .point-state { color: var(--success); }
 .run-point-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-.run-point-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 10px; color: var(--text-muted); font-size: 0.61rem; line-height: 1.55; }
-.point-phase { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(34, 211, 238, 0.14); color: var(--accent-primary); font-size: 0.63rem; }
-.run-controls { display: flex; flex-direction: column; gap: 15px; }
+.run-point-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 10px; color: var(--text-muted); font-size: var(--text-xs); line-height: 1.55; }
+.point-phase { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding-top: 9px; border-top: 1px solid rgba(34, 211, 238, 0.14); color: var(--accent-primary); font-size: var(--text-xs); }
+.run-controls { display: flex; flex-direction: column; gap: 14px; }
 .overall-progress > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .overall-progress strong { color: var(--accent-primary); font-family: var(--font-mono); font-size: 1.35rem; font-weight: 600; }
-.overall-progress span { color: var(--text-muted); font-size: 0.62rem; }
+.overall-progress span { color: var(--text-muted); font-size: var(--text-xs); }
 .progress-track { height: 7px; margin-top: 9px; overflow: hidden; border-radius: 5px; background: var(--bg-elevated); }
 .progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent-gradient); transition: width 200ms ease; }
 .current-stage { padding: 11px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-soft); }
-.current-stage > span { display: block; color: var(--text-muted); font-size: 0.6rem; }
-.current-stage > strong { display: block; margin-top: 7px; color: var(--text-primary); font-size: 0.72rem; font-weight: 600; line-height: 1.5; }
-.current-stage > small { display: block; margin-top: 5px; color: var(--accent-primary); font-size: 0.63rem; }
+.current-stage > span { display: block; color: var(--text-muted); font-size: var(--text-xs); }
+.current-stage > strong { display: block; margin-top: 6px; color: var(--text-primary); font-size: var(--text-sm); font-weight: 600; }
+.current-stage > small { display: block; margin-top: 4px; color: var(--accent-primary); font-size: var(--text-xs); }
 .control-buttons { display: grid; grid-template-columns: 1fr; gap: 8px; }
-.control-note { color: var(--text-muted); font-size: 0.62rem; line-height: 1.65; }
+.control-note { color: var(--text-muted); font-size: var(--text-xs); line-height: 1.65; }
 .run-parameters { padding: 6px 15px 12px; }
-.run-parameters > div { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; line-height: 1.5; }
+.run-parameters > div { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-color); font-size: var(--text-xs); line-height: 1.5; }
 .run-parameters > div:last-child { border-bottom: 0; }
 .run-parameters dt { color: var(--text-muted); }
 .run-parameters dd { margin: 0; color: var(--text-secondary); text-align: right; }
 .run-log { max-height: 330px; padding: 8px 16px 14px; overflow-y: auto; }
-.log-entry { display: grid; grid-template-columns: 70px 8px minmax(0, 1fr); align-items: start; gap: 9px; padding: 10px 0; border-bottom: 1px solid var(--border-color); color: var(--text-secondary); font-size: 0.66rem; line-height: 1.55; }
+.log-entry { display: grid; grid-template-columns: 76px 8px minmax(0, 1fr); align-items: start; gap: 9px; padding: 10px 0; border-bottom: 1px solid var(--border-color); color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.55; }
 .log-entry:last-child { border-bottom: 0; }
-.log-entry time { color: var(--text-muted); font-size: 0.61rem; }
-.log-entry i { width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: var(--accent-primary); }
+.log-entry time { color: var(--text-muted); font-size: var(--text-xs); }
+.log-entry i { width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: var(--accent-primary); }
 .log-entry.success i { background: var(--success); }
 .log-entry.warning i { background: var(--warning); }
 .log-empty { min-height: 110px; }
 @media (max-width: 1050px) {
   .run-layout { grid-template-columns: 1fr; }
-  .run-sidebar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
   .run-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .run-sidebar { display: flex; }
-  .point-timeline { padding: 11px; }
-  .run-point { grid-template-columns: 25px minmax(0, 1fr); gap: 7px; }
-  .timeline-marker > span { width: 23px; height: 23px; }
-  .run-point-heading { flex-direction: column; gap: 6px; }
-  .log-entry { grid-template-columns: 58px 6px minmax(0, 1fr); gap: 7px; }
 }
 </style>

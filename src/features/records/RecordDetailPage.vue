@@ -18,7 +18,11 @@
             </div>
             <p>{{ record.id }} · {{ record.scene }} · {{ record.robotName }}</p>
           </div>
-          <span class="archive-label">已归档任务</span>
+          <div class="detail-header-actions">
+            <button type="button" class="detail-action-btn" @click="exportJson">导出 JSON</button>
+            <button type="button" class="detail-action-btn" @click="printReport">打印报告</button>
+            <span class="archive-label">已归档任务</span>
+          </div>
         </div>
       </header>
 
@@ -133,17 +137,19 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { demoRecords } from './demoData.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
+import { showToast } from '../../stores/toastStore.js'
 import { formatDateTime, formatDuration, formatTime, getCompletionRate, getPointStatus, getRecordResult } from './utils.js'
 
 const route = useRoute()
 const router = useRouter()
+const { records: storeRecords, initInspectionStore } = useInspectionStore()
 const pointPanelRef = ref(null)
 const selectedPointId = ref('')
 const anomalyLevels = { critical: '严重', warning: '警告', info: '提示' }
-const record = computed(() => demoRecords.find((item) => item.id === route.params.id))
+const record = computed(() => storeRecords.value.find((item) => item.id === route.params.id))
 const selectedPoint = computed(() => record.value?.points.find((point) => point.id === selectedPointId.value))
 const completionRate = computed(() => getCompletionRate(record.value))
 const completedCount = computed(() => record.value?.points.filter((point) => point.status !== 'skipped').length || 0)
@@ -169,6 +175,28 @@ function selectPoint(pointId) {
     nextTick(() => pointPanelRef.value?.scrollIntoView({ block: 'start' }))
   }
 }
+
+function exportJson() {
+  if (!record.value) return
+  const blob = new Blob([JSON.stringify(record.value, null, 2)], { type: 'application/json;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${record.value.id}.json`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+  showToast(`已导出 ${record.value.id}.json`, 'success')
+}
+
+function printReport() {
+  window.print()
+}
+
+onMounted(() => {
+  initInspectionStore()
+})
 </script>
 
 <style scoped>
@@ -181,7 +209,10 @@ function selectPoint(pointId) {
 .title-line { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
 h1 { font-size: 1.3rem; font-weight: 650; }
 .record-heading p { margin-top: 8px; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.68rem; }
-.archive-label { padding: 5px 9px; border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-muted); font-size: 0.65rem; white-space: nowrap; }
+.archive-label { padding: 5px 9px; border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-muted); font-size: var(--text-xs); white-space: nowrap; }
+.detail-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.detail-action-btn { height: 32px; padding: 0 11px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-secondary); background: var(--bg-soft); font-size: var(--text-xs); cursor: pointer; }
+.detail-action-btn:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
 .demo-badge { padding: 3px 7px; border: 1px solid rgba(251, 191, 36, 0.24); border-radius: 6px; color: var(--warning); background: rgba(251, 191, 36, 0.07); font-size: 0.62rem; }
 .status-badge { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border: 1px solid var(--border-color); border-radius: 20px; font-size: 0.64rem; white-space: nowrap; }
 .tone-success { border-color: rgba(52, 211, 153, 0.22); color: var(--success); background: rgba(52, 211, 153, 0.06); }

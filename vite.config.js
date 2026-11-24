@@ -8,7 +8,7 @@ export default defineConfig({
         port: Number(process.env.VITE_PORT || 5173),
         strictPort: true,
         watch: {
-            ignored: ['**/.git/**', '**/.chrome-*/**', '**/maps/**', '**/.backups/**']
+            ignored: ['**/.git/**', '**/.chrome-*/**', '**/maps/**', '**/data/**', '**/.backups/**']
         },
         proxy: {
             '/api': {

@@ -52,7 +52,7 @@
           <div><span>线速度</span><strong>{{ telemetry.command.linearX.toFixed(2) }} m/s</strong></div>
           <div><span>角速度</span><strong>{{ telemetry.command.angularZ.toFixed(2) }} rad/s</strong></div>
           <div><span>虚拟雷达</span><strong>{{ lidarText }}</strong></div>
-          <p>雷达为 360° 二维射线传感器（1° 分辨率、12 m 量程、base_scan），用于 SLAM 验证，不是 Unitree L1 的三维点云模型。</p>
+          <p>提供 2D 激光（360 束 / 12 m）与 16 线 3D 点云（/points，20 m）及双路机载/观察相机，用于建图、点云和工作台联调。</p>
           <p>拖动左侧摇杆控制 Go2。松开摇杆或点击“停止运动”即停车；控制指令超过 {{ controlConfig.command_timeout_ms ?? 600 }} 毫秒未更新也会自动停车。</p>
         </div>
       </section>
@@ -60,7 +60,7 @@
 
     <div class="simulation-note">
       <UiIcon name="activity" :size="16" />
-      <span>场景在本机 Isaac Sim 图形窗口中显示。ROS 2 桥接同步发布 /odom、/tf、/scan、/imu，并订阅 /cmd_vel。</span>
+      <span>场景在本机 Isaac Sim 图形窗口中显示。ROS 2 桥接同步发布 /odom、/tf、/scan、/points、/imu、/battery 及双路压缩相机流，并订阅 /cmd_vel。</span>
     </div>
     <div v-if="controlError" class="error-message mt-2">{{ controlError }}</div>
     <div v-if="errorMsg" class="error-message mt-2">{{ errorMsg }}</div>
@@ -68,7 +68,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { API_BASE } from '../config.js'
 import JoystickControl from './JoystickControl.vue'
 import UiIcon from './UiIcon.vue'
@@ -76,6 +76,8 @@ import UiIcon from './UiIcon.vue'
 defineProps({
   controlConfig: { type: Object, default: () => ({}) }
 })
+
+const emit = defineEmits(['active-scene-change'])
 
 const scenes = [
   { id: 'indoor', name: '室内巡检', icon: 'map', description: '办公室隔墙、门洞和桌椅，测试基础巡检与绕障。', tags: ['12 × 10 m', '门洞', '室内障碍'] },
@@ -195,6 +197,10 @@ onMounted(() => {
   statusTimer = setInterval(checkStatus, 3000)
   telemetryTimer = setInterval(updateTelemetry, 500)
 })
+
+watch(activeScene, (value) => {
+  emit('active-scene-change', value)
+}, { immediate: true })
 
 onUnmounted(() => {
   if (statusTimer) clearInterval(statusTimer)

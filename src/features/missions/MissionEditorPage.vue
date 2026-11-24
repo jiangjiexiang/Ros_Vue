@@ -121,6 +121,15 @@
             </div>
           </section>
 
+          <MissionMapPicker
+            :mapName="draft.map?.name || ''"
+            :waypoints="draft.waypoints"
+            :selectedWaypointId="selectedWaypointId"
+            :disabled="editorLocked"
+            @add-point="addWaypointFromMap"
+            @select-point="selectedWaypointId = $event"
+          />
+
           <div class="point-workspace">
             <section class="mission-panel point-list-panel">
               <div class="panel-heading">
@@ -284,6 +293,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import UiIcon from '../../components/UiIcon.vue'
+import MissionMapPicker from './MissionMapPicker.vue'
+import { useRobotStore } from '../../stores/robotStore.js'
 import { loadMapScenes } from './missionMaps.js'
 import {
   ACTION_DEFINITIONS,
@@ -305,11 +316,15 @@ const props = defineProps({
 const emit = defineEmits(['navigate', 'saved'])
 const { routeMissionId, navigate } = useMissionNavigation(props, emit)
 const { missions, storageError, saveMission: persistMission } = useMissionStore()
+const { robots: configuredRobots } = useRobotStore()
 const draft = ref(createEmptyMission())
 const selectedWaypointId = ref('')
 const selectedMapKey = ref('')
 const mapOptions = ref([])
-const robotOptions = ref([])
+const robotOptions = computed(() => configuredRobots.value.map((robot) => ({
+  ...robot,
+  model: `${robot.transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove'}${robot.namespace ? ` · /${robot.namespace}` : ''}`
+})))
 const mapLoading = ref(false)
 const mapSource = ref('')
 const mapMessage = ref('')
@@ -454,39 +469,20 @@ function updateMap() {
   }
 }
 
-function loadRobotProfiles() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('robot-console-robots') || '[]')
-    robotOptions.value = Array.isArray(saved)
-      ? saved.filter((robot) => robot.id && robot.name && robot.url).map((robot) => ({
-        ...robot,
-        model: `${robot.transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove'}${robot.namespace ? ` · /${robot.namespace}` : ''}`
-      }))
-      : []
-  } catch {
-    robotOptions.value = []
-  }
-  if (!draft.value.robotId && robotOptions.value.length) {
-    draft.value.robotId = robotOptions.value[0].id
-    updateRobot()
-  }
-}
-
-async function loadMaps() {
-  mapLoading.value = true
-  mapMessage.value = ''
-  const result = await loadMapScenes()
-  mapOptions.value = result.maps
-  mapSource.value = result.source
-  mapMessage.value = result.error || (!result.maps.length ? '地图服务当前没有已保存地图，请先建图或稍后重试。' : '')
-  ensureMapSelection()
-  mapLoading.value = false
-}
-
 function applyDwellToAll() {
   for (const waypoint of draft.value.waypoints) {
     waypoint.dwellSeconds = draft.value.dwellSeconds
   }
+}
+
+function addWaypointFromMap({ x, y, yaw = 0 }) {
+  const waypoint = createWaypoint({
+    pose: { x, y, yaw },
+    actions: ['photo'],
+    dwellSeconds: draft.value.dwellSeconds
+  }, draft.value.waypoints.length)
+  draft.value.waypoints.push(waypoint)
+  selectedWaypointId.value = waypoint.id
 }
 
 function addWaypoint() {
@@ -545,9 +541,23 @@ function openRun() {
   navigate(MISSION_PATHS.run(draft.value.id), draft.value.id)
 }
 
+async function loadMaps() {
+  mapLoading.value = true
+  mapMessage.value = ''
+  const result = await loadMapScenes()
+  mapOptions.value = result.maps
+  mapSource.value = result.source
+  mapMessage.value = result.error || (!result.maps.length ? '地图服务当前没有已保存地图，请先建图或稍后重试。' : '')
+  ensureMapSelection()
+  mapLoading.value = false
+}
+
 watch(routeMissionId, loadDraft, { immediate: true })
 onMounted(() => {
-  loadRobotProfiles()
+  if (!draft.value.robotId && robotOptions.value.length) {
+    draft.value.robotId = robotOptions.value[0].id
+    updateRobot()
+  }
   loadMaps()
 })
 </script>

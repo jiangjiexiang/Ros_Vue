@@ -5,7 +5,12 @@
         <div class="title-line">
           <h1 id="records-title">巡检记录</h1>
         </div>
-        <p>查询已归档任务，核对巡检覆盖情况与异常记录。</p>
+        <p>查询已归档任务，核对巡检覆盖情况、异常记录并导出报告。</p>
+      </div>
+      <div class="header-export">
+        <button type="button" class="export-button" :disabled="!filteredRecords.length" @click="exportCsv">
+          导出 CSV
+        </button>
       </div>
     </header>
 
@@ -33,6 +38,10 @@
     </section>
 
     <form class="filter-panel" @submit.prevent>
+      <label>
+        <span>关键词</span>
+        <input v-model.trim="filters.keyword" type="search" placeholder="任务名称、编号或场景">
+      </label>
       <label>
         <span>机器狗</span>
         <select v-model="filters.robotId">
@@ -124,9 +133,10 @@
 </template>
 
 <script setup>
-import { computed, reactive } from 'vue'
+import { computed, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { demoRecords } from './demoData.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
+import { showToast } from '../../stores/toastStore.js'
 import {
   filterRecords,
   formatDateTime,
@@ -137,11 +147,22 @@ import {
 } from './utils.js'
 
 const router = useRouter()
-const filters = reactive({ robotId: '', scene: '', startDate: '', endDate: '', result: '' })
-const robots = [...new Map(demoRecords.map((record) => [record.robotId, { id: record.robotId, name: record.robotName }])).values()]
-const scenes = [...new Set(demoRecords.map((record) => record.scene))]
+const { records: storeRecords, initInspectionStore } = useInspectionStore()
+const filters = reactive({ keyword: '', robotId: '', scene: '', startDate: '', endDate: '', result: '' })
+const robots = computed(() => [...new Map(storeRecords.value.map((record) => [record.robotId, { id: record.robotId, name: record.robotName }])).values()])
+const scenes = computed(() => [...new Set(storeRecords.value.map((record) => record.scene))])
 const dateRangeInvalid = computed(() => Boolean(filters.startDate && filters.endDate && filters.startDate > filters.endDate))
-const filteredRecords = computed(() => dateRangeInvalid.value ? [] : filterRecords(demoRecords, filters))
+const filteredRecords = computed(() => {
+  if (dateRangeInvalid.value) return []
+  const kw = filters.keyword.trim().toLowerCase()
+  return filterRecords(storeRecords.value, filters)
+    .filter((record) => {
+      if (!kw) return true
+      return [record.name, record.id, record.scene, record.robotName].join(' ').toLowerCase().includes(kw)
+    })
+    .slice()
+    .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')))
+})
 const hasActiveFilters = computed(() => Object.values(filters).some(Boolean))
 const summary = computed(() => {
   const allPoints = filteredRecords.value.flatMap((record) => record.points)
@@ -160,12 +181,48 @@ function completedPoints(record) {
 }
 
 function resetFilters() {
-  Object.assign(filters, { robotId: '', scene: '', startDate: '', endDate: '', result: '' })
+  Object.assign(filters, { keyword: '', robotId: '', scene: '', startDate: '', endDate: '', result: '' })
 }
 
 function openRecord(record) {
   router.push({ path: `/records/${encodeURIComponent(record.id)}` })
 }
+
+function csvCell(value) {
+  const text = String(value ?? '').replace(/"/g, '""')
+  return `"${text}"`
+}
+
+function exportCsv() {
+  if (!filteredRecords.value.length) return
+  const headers = ['记录编号', '任务名称', '机器狗', '巡检场景', '开始时间', '耗时(秒)', '完成率(%)', '异常数量', '任务结果']
+  const rows = filteredRecords.value.map((r) => [
+    r.id,
+    r.name,
+    r.robotName,
+    r.scene,
+    formatDateTime(r.startedAt, true),
+    r.duration,
+    getCompletionRate(r),
+    r.anomalies.length,
+    getRecordResult(r.result).label
+  ])
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n')
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `inspection-records-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+  showToast(`已导出 ${filteredRecords.value.length} 条巡检记录 CSV`, 'success')
+}
+
+onMounted(() => {
+  initInspectionStore()
+})
 </script>
 
 <style scoped>
@@ -184,7 +241,9 @@ h1 { font-size: 1.3rem; font-weight: 650; letter-spacing: 0.02em; }
 .summary-card .duration-value { font-size: 1.08rem; line-height: 1.85rem; }
 .summary-card p { margin-top: 5px; color: var(--text-muted); font-size: 0.64rem; }
 .summary-card.has-anomalies strong { color: var(--warning); }
-.filter-panel { display: grid; grid-template-columns: repeat(2, minmax(130px, 1fr)) repeat(2, minmax(145px, 0.85fr)) minmax(120px, 0.8fr) auto; gap: 10px; align-items: end; width: min(1440px, 100%); margin: 0 auto; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-card); }
+.filter-panel { display: grid; grid-template-columns: minmax(170px, 1.2fr) repeat(2, minmax(120px, 1fr)) repeat(2, minmax(135px, 0.85fr)) minmax(115px, 0.8fr) auto; gap: 10px; align-items: end; width: min(1440px, 100%); margin: 0 auto; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-card); }
+.header-export { display: flex; gap: 8px; }
+.export-button { height: 36px; padding: 0 14px; border: 1px solid rgba(34, 211, 238, 0.35); border-radius: var(--radius-sm); color: var(--accent-primary); background: rgba(34, 211, 238, 0.08); font-size: var(--text-xs); font-weight: 500; cursor: pointer; }
 .filter-panel label { min-width: 0; }
 .filter-panel label > span { display: block; margin-bottom: 7px; color: var(--text-muted); font-size: 0.65rem; }
 select, input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); background: var(--bg-secondary); font-size: 0.7rem; }

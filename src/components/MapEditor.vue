@@ -27,13 +27,17 @@
             </button>
             <button :class="{ active: tool === 'pan' }" @click="tool = 'pan'">移动</button>
           </div>
-          <label v-if="tool !== 'pan'" class="brush-control">
+          <div v-if="tool !== 'pan'" class="tool-group">
+            <button :class="{ active: drawMode === 'brush' }" @click="drawMode = 'brush'">画笔</button>
+            <button :class="{ active: drawMode === 'rect' }" @click="drawMode = 'rect'">矩形填充</button>
+          </div>
+          <label v-if="tool !== 'pan' && drawMode === 'brush'" class="brush-control">
             笔刷 <input v-model.number="brushSize" type="range" min="1" max="40">
             <span>{{ brushSize }} px</span>
           </label>
           <div class="history-actions">
-            <button :disabled="!undoCount" @click="undo">撤销</button>
-            <button :disabled="!redoCount" @click="redo">重做</button>
+            <button :disabled="!undoCount" title="Ctrl+Z" @click="undo">撤销</button>
+            <button :disabled="!redoCount" title="Ctrl+Y / Ctrl+Shift+Z" @click="redo">重做</button>
           </div>
         </div>
 
@@ -58,9 +62,26 @@
           <span :class="{ dirty }">{{ saving ? '正在保存…' : dirty ? '有未保存的修改' : '地图已保存' }}</span>
           <button :disabled="loading" @click="fitView">适应窗口</button>
           <div class="footer-spacer"></div>
-          <button :disabled="loading || saving" @click="saveMap(true)">另存为场景</button>
+          <button :disabled="loading || saving" @click="openSaveAs">另存为场景</button>
           <button class="primary-button" :disabled="loading || saving || !dirty" @click="saveMap(false)">保存修改</button>
         </footer>
+
+        <div v-if="saveAsOpen" class="save-as-backdrop" @click.self="saveAsOpen = false">
+          <form class="save-as-dialog" @submit.prevent="confirmSaveAs">
+            <h3>另存为新场景</h3>
+            <input
+              ref="saveAsInputRef"
+              v-model.trim="saveAsName"
+              maxlength="80"
+              placeholder="输入新的场景名称"
+              required
+            >
+            <div class="save-as-actions">
+              <button type="button" @click="saveAsOpen = false">取消</button>
+              <button type="submit" class="primary-button">确认另存为</button>
+            </div>
+          </form>
+        </div>
       </section>
     </div>
   </Teleport>
@@ -69,6 +90,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { API_BASE } from '../config.js'
+import { confirmDialog, showToast } from '../stores/toastStore.js'
 
 const props = defineProps({
   mapName: { type: String, required: true },
@@ -90,7 +112,11 @@ const height = ref(0)
 const resolution = ref(0.05)
 const origin = ref([0, 0, 0])
 const tool = ref('occupied')
+const drawMode = ref('brush')
 const brushSize = ref(6)
+const saveAsOpen = ref(false)
+const saveAsName = ref('')
+const saveAsInputRef = ref(null)
 const loading = ref(false)
 const saving = ref(false)
 const dirty = ref(false)
@@ -109,6 +135,8 @@ let mapContext = null
 let mapImage = null
 let isPainting = false
 let isPanning = false
+let rectStart = null
+let rectCurrent = null
 let lastPaintPoint = null
 let lastPanPoint = null
 let resizeObserver = null
@@ -196,7 +224,24 @@ function draw() {
   }
   ctx.restore()
 
-  if (cursorInside.value && cursor.value && tool.value !== 'pan') {
+  if (rectStart && rectCurrent && tool.value !== 'pan' && drawMode.value === 'rect') {
+    const x1 = Math.min(rectStart.x, rectCurrent.x)
+    const y1 = Math.min(rectStart.y, rectCurrent.y)
+    const x2 = Math.max(rectStart.x, rectCurrent.x) + 1
+    const y2 = Math.max(rectStart.y, rectCurrent.y) + 1
+    const sx = offsetX.value + x1 * scale.value
+    const sy = offsetY.value + y1 * scale.value
+    const sw = (x2 - x1) * scale.value
+    const sh = (y2 - y1) * scale.value
+    ctx.save()
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.95)'
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.16)'
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([5, 4])
+    ctx.fillRect(sx, sy, sw, sh)
+    ctx.strokeRect(sx, sy, sw, sh)
+    ctx.restore()
+  } else if (cursorInside.value && cursor.value && tool.value !== 'pan' && drawMode.value === 'brush') {
     const screenX = offsetX.value + (cursor.value.x + 0.5) * scale.value
     const screenY = offsetY.value + (cursor.value.y + 0.5) * scale.value
     ctx.beginPath()
@@ -289,6 +334,25 @@ function redo() {
   draw()
 }
 
+function paintRect(from, to) {
+  const item = tools.find((entry) => entry.id === tool.value)
+  if (!item) return
+  const minX = Math.max(0, Math.min(from.x, to.x))
+  const maxX = Math.min(width.value - 1, Math.max(from.x, to.x))
+  const minY = Math.max(0, Math.min(from.y, to.y))
+  const maxY = Math.min(height.value - 1, Math.max(from.y, to.y))
+  if (minX > maxX || minY > maxY) return
+  beginStroke()
+  mapContext.fillStyle = pixelColor(item.value)
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      pixels[y * width.value + x] = item.value
+    }
+  }
+  mapContext.fillRect(minX, minY, maxX - minX + 1, maxY - minY + 1)
+  dirty.value = true
+}
+
 function onPointerDown(event) {
   if (loading.value || saving.value || !pixels.length) return
   cursorInside.value = true
@@ -298,6 +362,9 @@ function onPointerDown(event) {
   if (tool.value === 'pan' || event.button === 1 || event.button === 2) {
     isPanning = true
     lastPanPoint = { x: point.sx, y: point.sy }
+  } else if (event.button === 0 && drawMode.value === 'rect') {
+    rectStart = { x: point.x, y: point.y }
+    rectCurrent = { x: point.x, y: point.y }
   } else if (event.button === 0) {
     isPainting = true
     beginStroke()
@@ -312,7 +379,9 @@ function onPointerMove(event) {
   const point = eventPoint(event)
   cursor.value = { x: point.x, y: point.y }
   cursorInside.value = true
-  if (isPainting && lastPaintPoint) {
+  if (rectStart) {
+    rectCurrent = { x: point.x, y: point.y }
+  } else if (isPainting && lastPaintPoint) {
     paintLine(lastPaintPoint, point)
     lastPaintPoint = { x: point.x, y: point.y }
     dirty.value = true
@@ -325,6 +394,12 @@ function onPointerMove(event) {
 }
 
 function onPointerUp() {
+  if (rectStart && rectCurrent) {
+    paintRect(rectStart, rectCurrent)
+    rectStart = null
+    rectCurrent = null
+    draw()
+  }
   isPainting = false
   isPanning = false
   lastPaintPoint = null
@@ -382,28 +457,39 @@ async function loadMap(name) {
 
 async function switchScene() {
   if (selectedName.value === currentName.value) return
-  if (dirty.value && !window.confirm('当前地图有未保存修改，确定放弃并切换场景吗？')) {
-    selectedName.value = currentName.value
-    return
+  if (dirty.value) {
+    const ok = await confirmDialog({
+      title: '切换地图场景',
+      message: '当前地图有未保存修改，确定放弃修改并切换场景吗？',
+      confirmText: '放弃并切换',
+      danger: true
+    })
+    if (!ok) {
+      selectedName.value = currentName.value
+      return
+    }
   }
   await loadMap(selectedName.value)
 }
 
-async function saveMap(saveAs) {
-  let newName
-  if (saveAs) {
-    newName = window.prompt('请输入新场景名称：', `${currentName.value}_edited`)
-    if (newName === null) return
-    if (!newName.trim()) {
-      errorMsg.value = '场景名称不能为空'
-      return
-    }
-  }
+function openSaveAs() {
+  saveAsName.value = `${currentName.value}_edited`
+  saveAsOpen.value = true
+  nextTick(() => saveAsInputRef.value?.focus())
+}
+
+async function confirmSaveAs() {
+  if (!saveAsName.value.trim()) return
+  saveAsOpen.value = false
+  await saveMap(true, saveAsName.value.trim())
+}
+
+async function saveMap(saveAs, customNewName = '') {
   saving.value = true
   errorMsg.value = ''
   try {
     const body = { width: width.value, height: height.value, pixels: encodePixels() }
-    if (saveAs) body.newName = newName.trim()
+    if (saveAs) body.newName = customNewName
     const res = await fetch(`${API_BASE}/maps/${encodeURIComponent(currentName.value)}/content`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -414,6 +500,7 @@ async function saveMap(saveAs) {
     currentName.value = data.map.name
     selectedName.value = data.map.name
     dirty.value = false
+    showToast(`地图「${data.map.name}」已保存`, 'success')
     emit('saved', data)
   } catch (err) {
     errorMsg.value = err.message
@@ -422,12 +509,28 @@ async function saveMap(saveAs) {
   }
 }
 
-function requestClose() {
-  if (dirty.value && !window.confirm('地图有未保存修改，确定关闭吗？')) return
+async function requestClose() {
+  if (dirty.value) {
+    const ok = await confirmDialog({
+      title: '关闭地图编辑器',
+      message: '地图仍有未保存的修改，确定放弃修改并关闭编辑器吗？',
+      confirmText: '放弃并关闭',
+      danger: true
+    })
+    if (!ok) return
+  }
   emit('close')
 }
 
 function onKeyDown(event) {
+  if (event.key === 'Escape') {
+    if (saveAsOpen.value) {
+      saveAsOpen.value = false
+      return
+    }
+    requestClose()
+    return
+  }
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName)) return
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
@@ -436,6 +539,9 @@ function onKeyDown(event) {
     event.preventDefault()
     if (event.shiftKey) redo()
     else undo()
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+    event.preventDefault()
+    redo()
   }
 }
 
@@ -485,7 +591,13 @@ onUnmounted(() => {
 .editor-footer > span { color: var(--text-muted); font-size: 0.68rem; }
 .editor-footer > span.dirty { color: var(--warning); }
 .footer-spacer { flex: 1; }
-.editor-footer .primary-button { border-color: transparent; color: white; background: var(--accent-gradient); }
+.editor-footer .primary-button, .save-as-dialog .primary-button { border-color: transparent; color: white; background: var(--accent-gradient); }
+.save-as-backdrop { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 14, 0.72); }
+.save-as-dialog { width: min(360px, 100%); padding: 18px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-card); }
+.save-as-dialog h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 12px; }
+.save-as-dialog input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-primary); background: var(--bg-secondary); font-size: var(--text-sm); }
+.save-as-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.save-as-actions button { min-height: 32px; padding: 0 12px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-secondary); background: var(--bg-soft); font-size: var(--text-xs); cursor: pointer; }
 @media (max-width: 700px) {
   .editor-overlay { padding: 0; }
   .map-editor { width: 100vw; height: 100dvh; border-radius: 0; }

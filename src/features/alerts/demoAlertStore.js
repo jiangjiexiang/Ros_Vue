@@ -1,29 +1,9 @@
-import { ref } from 'vue'
-import { createDemoAlerts } from './demoData.js'
-import { currentDateTime } from './utils.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
 
-export const alertSession = ref(createDemoAlerts())
+const {
+  alerts: alertSession,
+  acknowledgeAlert,
+  resolveAlert
+} = useInspectionStore()
 
-export function acknowledgeAlert(id) {
-  const alert = alertSession.value.find((item) => item.id === id)
-  if (!alert || alert.status !== 'pending') return null
-  Object.assign(alert, {
-    status: 'acknowledged',
-    acknowledgedAt: currentDateTime(),
-    acknowledgedBy: '值班员'
-  })
-  return alert
-}
-
-export function resolveAlert(id, resolution, note) {
-  const alert = alertSession.value.find((item) => item.id === id)
-  if (!alert || alert.status !== 'acknowledged') return null
-  Object.assign(alert, {
-    status: 'resolved',
-    resolution,
-    resolutionNote: note,
-    handledAt: currentDateTime(),
-    handledBy: '值班员'
-  })
-  return alert
-}
+export { alertSession, acknowledgeAlert, resolveAlert }

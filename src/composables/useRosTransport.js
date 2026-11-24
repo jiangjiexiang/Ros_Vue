@@ -1,26 +1,29 @@
-import { computed } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { useFoxglove } from './useFoxglove.js'
 import { useRosbridge } from './useRosbridge.js'
 
 export function useRosTransport() {
   const foxglove = useFoxglove()
   const rosbridge = useRosbridge()
-  let active = foxglove
+  const active = shallowRef(foxglove)
 
-  const connectionState = computed(() => active.connectionState.value)
-  const errorMessage = computed(() => active.errorMessage.value)
-  const serverName = computed(() => active.serverName.value)
-  const serverCapabilities = computed(() => active.serverCapabilities.value)
+  const connectionState = computed(() => active.value.connectionState.value)
+  const errorMessage = computed(() => active.value.errorMessage.value)
+  const serverName = computed(() => active.value.serverName.value)
+  const serverCapabilities = computed(() => active.value.serverCapabilities.value)
+  const protocol = computed(() => (active.value === rosbridge ? 'rosbridge' : 'foxglove'))
 
-  function connect(url, protocol = 'foxglove') {
-    const next = protocol === 'rosbridge' ? rosbridge : foxglove
-    if (active !== next) active.disconnect()
-    active = next
-    active.connect(url)
+  function connect(url, targetProtocol = 'foxglove') {
+    const next = targetProtocol === 'rosbridge' ? rosbridge : foxglove
+    if (active.value !== next) {
+      active.value.disconnect()
+      active.value = next
+    }
+    active.value.connect(url)
   }
 
   function disconnect() {
-    active.disconnect()
+    active.value.disconnect()
   }
 
   return {
@@ -28,16 +31,17 @@ export function useRosTransport() {
     errorMessage,
     serverName,
     serverCapabilities,
-    get availableChannels() { return active.availableChannels },
+    protocol,
+    get availableChannels() { return active.value.availableChannels },
     connect,
     disconnect,
-    subscribe: (...args) => active.subscribe(...args),
-    unsubscribe: (...args) => active.unsubscribe(...args),
-    clientAdvertise: (...args) => active.clientAdvertise(...args),
-    publishMessage: (...args) => active.publishMessage(...args),
-    sendTwist: (...args) => active.sendTwist(...args),
-    sendGoalPose: (...args) => active.sendGoalPose(...args),
-    sendInitialPose: (...args) => active.sendInitialPose(...args),
-    findChannelByTopic: (...args) => active.findChannelByTopic(...args)
+    subscribe: (...args) => active.value.subscribe(...args),
+    unsubscribe: (...args) => active.value.unsubscribe(...args),
+    clientAdvertise: (...args) => active.value.clientAdvertise(...args),
+    publishMessage: (...args) => active.value.publishMessage(...args),
+    sendTwist: (...args) => active.value.sendTwist(...args),
+    sendGoalPose: (...args) => active.value.sendGoalPose(...args),
+    sendInitialPose: (...args) => active.value.sendInitialPose(...args),
+    findChannelByTopic: (...args) => active.value.findChannelByTopic(...args)
   }
 }

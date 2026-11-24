@@ -1,18 +1,48 @@
 <template>
   <main class="inspection-workspace">
-    <aside class="inspection-column inspection-left" aria-label="实时相机与机器人连接">
-      <CameraPanel
-        title="机器狗机载相机"
-        :message="cameraPrimary"
-        :connected="connected"
-        :topic="cameraPrimary?.topic || cameraPrimaryTopic"
-      />
+    <aside class="inspection-column inspection-left" aria-label="实时相机、连接与遥测">
+      <div class="camera-switcher-card">
+        <div class="camera-switch-pills" role="tablist" aria-label="相机视角切换">
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="cameraSlot === 'primary'"
+            :class="{ active: cameraSlot === 'primary' }"
+            @click="cameraSlot = 'primary'"
+          >
+            机载主相机
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="cameraSlot === 'secondary'"
+            :class="{ active: cameraSlot === 'secondary' }"
+            @click="cameraSlot = 'secondary'"
+          >
+            副视角相机
+          </button>
+        </div>
+
+        <CameraPanel
+          :title="cameraSlot === 'primary' ? '机器狗机载相机' : '场景 / 辅助相机'"
+          :message="activeCameraMessage"
+          :connected="connected"
+          :topic="activeCameraMessage?.topic || activeCameraTopic"
+        />
+      </div>
+
       <ConnectionPanel
         :robots="robots"
         :activeRobotId="activeRobotId"
         :connectionState="connectionState"
         :errorMessage="errorMessage"
         @connect="emit('connect', $event)"
+      />
+
+      <TelemetryPanel
+        :odomData="odomData"
+        :imuData="imuData"
+        :connected="connected"
       />
     </aside>
 
@@ -104,51 +134,82 @@
     </section>
 
     <aside class="inspection-column inspection-right" aria-label="任务与运动控制">
-      <section class="card inspection-control-card">
-        <div class="card-header">
-          <span><UiIcon name="route" :size="17" />导航与航点</span>
-          <small :class="{ running: isNavigating }">{{ isNavigating ? '运行中' : '待机' }}</small>
+      <section class="card right-tab-card">
+        <div class="right-tabs" role="tablist" aria-label="控制面板切换">
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="rightTab === 'navigation'"
+            :class="{ active: rightTab === 'navigation' }"
+            @click="rightTab = 'navigation'"
+          >
+            <UiIcon name="route" :size="15" />
+            <span>导航</span>
+            <i v-if="isNavigating" class="tab-dot"></i>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="rightTab === 'mapping'"
+            :class="{ active: rightTab === 'mapping' }"
+            @click="rightTab = 'mapping'"
+          >
+            <UiIcon name="map" :size="15" />
+            <span>建图</span>
+            <i v-if="isMapping" class="tab-dot"></i>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="rightTab === 'joystick'"
+            :class="{ active: rightTab === 'joystick' }"
+            @click="rightTab = 'joystick'"
+          >
+            <UiIcon name="move" :size="15" />
+            <span>遥控</span>
+          </button>
         </div>
-        <NavigationControl
-          :connected="connected"
-          :mapsRevision="mapsRevision"
-          :selectedMap="selectedMap"
-          :isNavigating="isNavigating"
-          :isSettingPose="isSettingPose"
-          :multiPointMode="multiPointMode"
-          :waypointCount="waypointCount"
-          @update:selectedMap="emit('update:selectedMap', $event)"
-          @update:isNavigating="emit('update:isNavigating', $event)"
-          @update:isSettingPose="emit('update:isSettingPose', $event)"
-          @update:multiPointMode="emit('update:multiPointMode', $event)"
-          @navigationStarted="emit('navigation-started')"
-          @clear-waypoints="emit('clear-waypoints')"
-          @save-mission="emit('save-mission')"
-        />
-      </section>
 
-      <section class="card inspection-control-card">
-        <div class="card-header">
-          <span><UiIcon name="map" :size="17" />建图操作</span>
-          <small :class="{ running: isMapping }">{{ isMapping ? '运行中' : '待机' }}</small>
+        <div v-show="rightTab === 'navigation'" class="tab-panel-body">
+          <NavigationControl
+            :connected="connected"
+            :mapsRevision="mapsRevision"
+            :selectedMap="selectedMap"
+            :isNavigating="isNavigating"
+            :isSettingPose="isSettingPose"
+            :multiPointMode="multiPointMode"
+            :waypointCount="waypointCount"
+            @update:selectedMap="emit('update:selectedMap', $event)"
+            @update:isNavigating="emit('update:isNavigating', $event)"
+            @update:isSettingPose="emit('update:isSettingPose', $event)"
+            @update:multiPointMode="emit('update:multiPointMode', $event)"
+            @navigationStarted="emit('navigation-started')"
+            @clear-waypoints="emit('clear-waypoints')"
+            @save-mission="emit('save-mission')"
+          />
         </div>
-        <p class="algorithm-plan">{{ algorithmLabel }} · 启动命令在系统配置中管理</p>
-        <MappingControl
-          :connected="connected"
-          :isMapping="isMapping"
-          @update:isMapping="emit('update:isMapping', $event)"
-          @mappingStarted="emit('mapping-started')"
-        />
-      </section>
 
-      <JoystickControl
-        :connected="connected"
-        :maxLinearSpeed="controlConfig.max_linear_speed ?? 0.5"
-        :maxAngularSpeed="controlConfig.max_angular_speed ?? 1.0"
-        :commandRateHz="controlConfig.command_rate_hz ?? 10"
-        @velocity-change="emit('velocity-change', $event)"
-        @stop="emit('stop-motion')"
-      />
+        <div v-show="rightTab === 'mapping'" class="tab-panel-body">
+          <p class="algorithm-plan">{{ algorithmLabel }} · 启动命令在系统配置中管理</p>
+          <MappingControl
+            :connected="connected"
+            :isMapping="isMapping"
+            @update:isMapping="emit('update:isMapping', $event)"
+            @mappingStarted="emit('mapping-started')"
+          />
+        </div>
+
+        <div v-show="rightTab === 'joystick'" class="tab-panel-body joystick-tab-wrap">
+          <JoystickControl
+            :connected="connected"
+            :maxLinearSpeed="controlConfig.max_linear_speed ?? 0.5"
+            :maxAngularSpeed="controlConfig.max_angular_speed ?? 1.0"
+            :commandRateHz="controlConfig.command_rate_hz ?? 10"
+            @velocity-change="emit('velocity-change', $event)"
+            @stop="emit('stop-motion')"
+          />
+        </div>
+      </section>
 
       <BatteryStatus
         :percentage="batteryPercentage"
@@ -160,7 +221,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import BatteryStatus from './BatteryStatus.vue'
 import CameraPanel from './CameraPanel.vue'
 import ConnectionPanel from './ConnectionPanel.vue'
@@ -168,6 +229,7 @@ import JoystickControl from './JoystickControl.vue'
 import MappingControl from './MappingControl.vue'
 import NavigationControl from './NavigationControl.vue'
 import SlamMap from './SlamMap.vue'
+import TelemetryPanel from './TelemetryPanel.vue'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
@@ -183,6 +245,7 @@ const props = defineProps({
   tfData: { type: Object, default: null },
   planData: { type: Object, default: null },
   odomData: { type: Object, default: null },
+  imuData: { type: Object, default: null },
   navFeedback: { type: Object, default: null },
   batteryPercentage: { type: Number, default: -1 },
   batteryVoltage: { type: Number, default: 0 },
@@ -198,7 +261,9 @@ const props = defineProps({
   activeWaypoint: { type: Object, default: null },
   mapsRevision: { type: Number, default: 0 },
   cameraPrimary: { type: Object, default: null },
-  cameraPrimaryTopic: { type: String, default: '' }
+  cameraPrimaryTopic: { type: String, default: '' },
+  cameraSecondary: { type: Object, default: null },
+  cameraSecondaryTopic: { type: String, default: '' }
 })
 
 const emit = defineEmits([
@@ -219,6 +284,16 @@ const emit = defineEmits([
   'update:isMapping',
   'update:isNavigating'
 ])
+
+const cameraSlot = ref('primary')
+const rightTab = ref('navigation')
+
+const activeCameraMessage = computed(() => (
+  cameraSlot.value === 'secondary' ? props.cameraSecondary : props.cameraPrimary
+))
+const activeCameraTopic = computed(() => (
+  cameraSlot.value === 'secondary' ? props.cameraSecondaryTopic : props.cameraPrimaryTopic
+))
 
 const modeText = computed(() => {
   if (!props.connected) return '离线'
@@ -261,22 +336,50 @@ const interactionHint = computed(() => {
 <style scoped>
 .inspection-workspace {
   display: grid;
-  grid-template-columns: minmax(230px, 280px) minmax(440px, 1fr) minmax(270px, 310px);
+  grid-template-columns: minmax(250px, 300px) minmax(440px, 1fr) minmax(280px, 320px);
   gap: 12px;
   height: 100%;
-  min-height: 660px;
-  padding: 14px;
+  min-height: 620px;
+  padding: 12px;
   overflow: hidden;
 }
 .inspection-column {
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 10px;
   min-width: 0;
   min-height: 0;
   padding-right: 2px;
   overflow-y: auto;
   scrollbar-gutter: stable;
+}
+.camera-switcher-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.camera-switch-pills {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-card);
+}
+.camera-switch-pills button {
+  height: 29px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.camera-switch-pills button.active {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
 }
 .inspection-center {
   display: flex;
@@ -296,7 +399,7 @@ const interactionHint = computed(() => {
   align-items: center;
   gap: 9px;
   min-width: 0;
-  padding: 11px;
+  padding: 10px 11px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background: rgba(15, 28, 46, 0.82);
@@ -309,23 +412,21 @@ const interactionHint = computed(() => {
   flex: 0 0 auto;
   border-radius: 8px;
   color: var(--accent-primary);
-  background: rgba(34, 211, 238, 0.07);
+  background: rgba(34, 211, 238, 0.08);
 }
-.inspection-metric > div:last-child {
-  min-width: 0;
-}
+.inspection-metric > div:last-child { min-width: 0; }
 .inspection-metric span {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   color: var(--text-muted);
-  font-size: 0.61rem;
+  font-size: var(--text-xs);
 }
 .inspection-metric strong {
   display: block;
   overflow: hidden;
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 0.77rem;
+  font-size: 0.88rem;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -333,7 +434,7 @@ const interactionHint = computed(() => {
 .inspection-metric small {
   margin-left: 3px;
   color: var(--text-muted);
-  font-size: 0.57rem;
+  font-size: var(--text-xs);
   font-weight: 400;
 }
 .inspection-map {
@@ -349,27 +450,22 @@ const interactionHint = computed(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px 8px;
+  padding: 9px 12px 7px;
 }
-.map-tools-layers .layer-controls {
-  flex: 1;
-  gap: 6px;
-}
-.map-tools-layers .layer-chip {
-  padding: 5px 7px;
-}
+.map-tools-layers .layer-controls { flex: 1; gap: 6px; }
+.map-tools-layers .layer-chip { padding: 5px 8px; }
 .map-tools-layers > small {
   flex: 0 0 auto;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 0.58rem;
+  font-size: var(--text-xs);
 }
 .map-tools-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 31px;
+  min-height: 30px;
   padding: 0 12px 9px;
 }
 .map-legend {
@@ -383,7 +479,7 @@ const interactionHint = computed(() => {
   align-items: center;
   gap: 5px;
   color: var(--text-muted);
-  font-size: 0.59rem;
+  font-size: var(--text-xs);
 }
 .map-tools-footer p {
   display: flex;
@@ -392,58 +488,79 @@ const interactionHint = computed(() => {
   gap: 6px;
   min-width: 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
-  line-height: 1.5;
+  font-size: var(--text-xs);
   text-align: right;
 }
-.map-tools-footer p svg {
-  flex: 0 0 auto;
+.map-tools-footer p.active { color: var(--accent-primary); }
+
+.right-tab-card {
+  display: flex;
+  flex-direction: column;
 }
-.map-tools-footer p.active {
+.right-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(2, 8, 18, 0.25);
+}
+.right-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.right-tabs button:hover {
+  color: var(--text-primary);
+  background: var(--bg-soft);
+}
+.right-tabs button.active {
+  border-color: rgba(34, 211, 238, 0.28);
   color: var(--accent-primary);
+  background: rgba(34, 211, 238, 0.08);
 }
-.inspection-control-card .card-header {
-  min-height: 42px;
+.tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
 }
-.inspection-control-card :deep(.control-section) {
-  padding: 13px;
-}
-.inspection-control-card :deep(.control-description) {
-  margin-bottom: 11px;
-  font-size: 0.65rem;
+.tab-panel-body :deep(.control-section) {
+  padding: 14px;
 }
 .algorithm-plan {
-  margin: 0 13px 10px;
+  margin: 12px 14px 0;
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
-.inspection-control-card small.running {
-  color: var(--success);
+.joystick-tab-wrap :deep(.card) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
-.inspection-right :deep(.joystick-container) {
-  padding: 12px;
-}
-.inspection-right :deep(.joystick-canvas-wrapper) {
-  width: min(200px, 100%);
-  height: auto;
-  aspect-ratio: 1;
+.joystick-tab-wrap :deep(.joystick-container) {
+  padding: 14px;
 }
 
 @media (max-width: 1500px) {
   .inspection-workspace {
-    grid-template-columns: minmax(224px, 254px) minmax(420px, 1fr) minmax(264px, 288px);
+    grid-template-columns: minmax(234px, 268px) minmax(420px, 1fr) minmax(272px, 296px);
     gap: 10px;
-    padding: 12px;
   }
-  .inspection-metric {
-    padding: 9px;
-  }
-  .inspection-metric-icon {
-    display: none;
-  }
+  .inspection-metric-icon { display: none; }
 }
-
 @media (max-width: 1240px) {
   .inspection-workspace {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -451,86 +568,18 @@ const interactionHint = computed(() => {
     min-height: 100%;
     overflow: visible;
   }
-  .inspection-center {
-    grid-column: 1 / -1;
-    grid-row: 1;
-    min-height: 620px;
-  }
-  .inspection-left {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  .inspection-right {
-    grid-column: 2;
-    grid-row: 2;
-  }
-  .inspection-column {
-    padding-right: 0;
-    overflow: visible;
-  }
-  .inspection-map {
-    min-height: 480px;
-  }
-  .inspection-metric-icon {
-    display: grid;
-  }
+  .inspection-center { grid-column: 1 / -1; grid-row: 1; min-height: 600px; }
+  .inspection-left { grid-column: 1; grid-row: 2; }
+  .inspection-right { grid-column: 2; grid-row: 2; }
+  .inspection-column { padding-right: 0; overflow: visible; }
+  .inspection-map { min-height: 460px; }
+  .inspection-metric-icon { display: grid; }
 }
-
 @media (max-width: 760px) {
-  .inspection-workspace {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-    padding: 10px;
-  }
-  .inspection-center,
-  .inspection-left,
-  .inspection-right {
-    grid-column: 1;
-  }
-  .inspection-center {
-    min-height: 580px;
-  }
-  .inspection-left {
-    grid-row: 2;
-  }
-  .inspection-right {
-    grid-row: 3;
-  }
-  .inspection-map {
-    min-height: 430px;
-  }
-  .map-tools-footer {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 7px;
-  }
-  .map-tools-footer p {
-    justify-content: flex-start;
-    text-align: left;
-  }
-}
-
-@media (max-width: 480px) {
-  .inspection-workspace {
-    padding: 8px;
-  }
-  .inspection-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .inspection-metric-icon {
-    display: grid;
-  }
-  .inspection-center {
-    min-height: 650px;
-  }
-  .inspection-map {
-    min-height: 400px;
-  }
-  .map-tools-layers {
-    align-items: flex-start;
-  }
-  .map-legend {
-    gap: 9px;
-  }
+  .inspection-workspace { grid-template-columns: minmax(0, 1fr); padding: 10px; }
+  .inspection-center, .inspection-left, .inspection-right { grid-column: 1; }
+  .inspection-left { grid-row: 2; }
+  .inspection-right { grid-row: 3; }
+  .map-tools-footer { align-items: flex-start; flex-direction: column; gap: 7px; }
 }
 </style>

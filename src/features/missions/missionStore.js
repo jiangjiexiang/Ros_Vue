@@ -1,4 +1,7 @@
 import { ref } from 'vue'
+import { API_BASE } from '../../config.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
+import { showToast } from '../../stores/toastStore.js'
 import { createDemoMissions } from './missionDemo.js'
 import {
   ACTIVE_MISSION_STATUSES,
@@ -27,16 +30,50 @@ function loadMissions() {
 
 const missions = ref(loadMissions())
 const storageError = ref('')
+const serverSynced = ref(false)
+
+async function syncMissionsToServer() {
+  try {
+    await fetch(`${API_BASE}/missions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: missions.value })
+    })
+  } catch {}
+}
 
 function persistMissions() {
   try {
-    if (!globalThis.localStorage) return
-    globalThis.localStorage.setItem(MISSION_STORAGE_KEY, JSON.stringify(missions.value))
+    if (globalThis.localStorage) {
+      globalThis.localStorage.setItem(MISSION_STORAGE_KEY, JSON.stringify(missions.value))
+    }
     storageError.value = ''
   } catch (error) {
     console.warn('保存本地巡检任务失败。', error)
     storageError.value = '浏览器本地存储不可用，本次修改仅在当前页面有效。'
   }
+  syncMissionsToServer()
+}
+
+async function initMissionsFromServer() {
+  if (serverSynced.value) return
+  try {
+    const res = await fetch(`${API_BASE}/missions`)
+    if (!res.ok) return
+    const data = await res.json()
+    if (data.hasData && Array.isArray(data.items) && data.items.length > 0) {
+      missions.value = data.items.map((mission) => normalizeMission(mission))
+      try {
+        globalThis.localStorage?.setItem(MISSION_STORAGE_KEY, JSON.stringify(missions.value))
+      } catch {}
+      serverSynced.value = true
+      return
+    }
+    if (!data.hasData && missions.value.length > 0) {
+      await syncMissionsToServer()
+      serverSynced.value = true
+    }
+  } catch {}
 }
 
 function findMission(id) {
@@ -147,18 +184,35 @@ function pauseMission(id) {
   persistMissions()
 }
 
-function abortMission(id) {
+function abortMission(id, reason = '任务已由用户终止。') {
   const mission = requireMission(id)
   if (!ACTIVE_MISSION_STATUSES.includes(mission.status)) return
   mission.status = 'aborted'
   mission.run.phase = 'aborted'
   mission.run.abortedAt = new Date().toISOString()
   mission.updatedAt = mission.run.abortedAt
-  appendRunLog(mission, '任务已由用户终止。', 'warning')
+  appendRunLog(mission, reason, 'warning')
   persistMissions()
+  const { archiveMissionRecord } = useInspectionStore()
+  const record = archiveMissionRecord(mission)
+  if (record) {
+    showToast(`任务已终止，并归档至巡检记录（${record.id}）`, 'warning')
+  }
 }
 
-function tickMission(id) {
+function completeCurrentWaypointNavigation(id, detail = '已到达目标点，开始执行巡检动作。') {
+  const mission = findMission(id)
+  if (!mission || mission.status !== 'running' || mission.run.phase !== 'navigating') return false
+  const waypoint = mission.waypoints[mission.run.currentWaypointIndex]
+  if (!waypoint) return false
+  mission.run.phase = 'inspecting'
+  mission.run.elapsedSeconds = 0
+  appendRunLog(mission, `“${waypoint.name}”${detail}`)
+  persistMissions()
+  return true
+}
+
+function tickMission(id, { waitForRosArrival = false, onTimeout } = {}) {
   const mission = findMission(id)
   if (!mission || mission.status !== 'running' || !mission.waypoints.length) return
 
@@ -174,6 +228,17 @@ function tickMission(id) {
   run.elapsedSeconds += 1
 
   if (run.phase === 'navigating') {
+    if (waitForRosArrival) {
+      const timeoutSeconds = Math.max(5, Number(mission.navigation?.navigationTimeoutSeconds || 90))
+      if (run.elapsedSeconds >= timeoutSeconds) {
+        if (onTimeout) onTimeout(mission, waypoint)
+        else abortMission(id, `前往“${waypoint.name}”导航超时（>${timeoutSeconds}s），任务已中止。`)
+        return
+      }
+      persistMissions()
+      return
+    }
+
     if (run.elapsedSeconds < DEMO_NAVIGATION_SECONDS) {
       persistMissions()
       return
@@ -215,6 +280,13 @@ function tickMission(id) {
     run.completedAt = new Date().toISOString()
     mission.updatedAt = run.completedAt
     appendRunLog(mission, '全部巡检点和循环已完成。', 'success')
+    persistMissions()
+    const { archiveMissionRecord } = useInspectionStore()
+    const record = archiveMissionRecord(mission)
+    if (record) {
+      showToast(`巡检任务已完成，已生成记录 ${record.id}`, 'success')
+    }
+    return
   }
   persistMissions()
 }
@@ -223,12 +295,15 @@ export function useMissionStore() {
   return {
     missions,
     storageError,
+    initMissionsFromServer,
     saveMission,
     duplicateMission,
     deleteMission,
     startMission,
     pauseMission,
     abortMission,
-    tickMission
+    tickMission,
+    completeCurrentWaypointNavigation,
+    appendRunLog
   }
 }

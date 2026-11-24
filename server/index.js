@@ -7,8 +7,12 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
+const dataDir = path.join(projectRoot, 'data');
+const STORE_COLLECTIONS = new Set(['robots', 'missions', 'records', 'alerts']);
+const MAX_TASK_LOG_LINES = 200;
 const app = express();
 const activeProcesses = new Map();
+const taskLogs = new Map();
 const simulationControlUrl = process.env.SIMULATION_CONTROL_URL || 'http://127.0.0.1:8766';
 const defaultCameraTopics = {
     camera_primary: '/camera1/preview/compressed',
@@ -278,7 +282,35 @@ function workspaceSetup(config) {
     return resolveFromProject(path.join(config.workspace || '..', 'install', 'setup.bash'));
 }
 
-function runRos(command, args, config, detached = true) {
+function writeJsonAtomic(filePath, data) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+        fs.writeFileSync(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+        fs.renameSync(tempPath, filePath);
+    } catch (err) {
+        fs.rmSync(tempPath, { force: true });
+        throw err;
+    }
+}
+
+function appendTaskLog(taskId, stream, chunk) {
+    if (!taskId) return;
+    const text = chunk.toString('utf8');
+    const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+    if (!lines.length) return;
+    const list = taskLogs.get(taskId) || [];
+    const now = new Date().toISOString();
+    for (const line of lines) {
+        list.push({ time: now, stream, line });
+    }
+    if (list.length > MAX_TASK_LOG_LINES) {
+        list.splice(0, list.length - MAX_TASK_LOG_LINES);
+    }
+    taskLogs.set(taskId, list);
+}
+
+function runRos(command, args, config, detached = true, taskId = null) {
     const script = [
         'set -e',
         'source /opt/ros/humble/setup.bash',
@@ -287,10 +319,23 @@ function runRos(command, args, config, detached = true) {
         'exec "$@"'
     ].join('\n');
 
-    return spawn('bash', ['-c', script, 'ros2-task', workspaceSetup(config), command, ...args], {
+    const proc = spawn('bash', ['-c', script, 'ros2-task', workspaceSetup(config), command, ...args], {
         detached,
-        stdio: 'inherit'
+        stdio: taskId ? ['ignore', 'pipe', 'pipe'] : 'inherit'
     });
+
+    if (taskId) {
+        proc.stdout?.on('data', (chunk) => {
+            process.stdout.write(chunk);
+            appendTaskLog(taskId, 'stdout', chunk);
+        });
+        proc.stderr?.on('data', (chunk) => {
+            process.stderr.write(chunk);
+            appendTaskLog(taskId, 'stderr', chunk);
+        });
+    }
+
+    return proc;
 }
 
 function startTask(task, config, extraArgs = []) {
@@ -298,15 +343,22 @@ function startTask(task, config, extraArgs = []) {
 
     const args = [...(task.args || []), ...extraArgs];
     console.log(`[${task.id}] ${task.description || task.command}`);
-    const proc = runRos(task.command, args, config);
+    taskLogs.set(task.id, [{
+        time: new Date().toISOString(),
+        stream: 'system',
+        line: `启动任务: ${task.command} ${args.join(' ')}`.trim()
+    }]);
+    const proc = runRos(task.command, args, config, true, task.id);
     activeProcesses.set(task.id, proc);
 
     proc.once('error', (err) => {
         console.error(`[${task.id}] 启动失败: ${err.message}`);
+        appendTaskLog(task.id, 'stderr', Buffer.from(`启动失败: ${err.message}`));
         activeProcesses.delete(task.id);
     });
     proc.once('exit', (code) => {
         console.log(`[${task.id}] 已退出 (${code})`);
+        appendTaskLog(task.id, 'system', Buffer.from(`进程已退出 (code=${code})`));
         activeProcesses.delete(task.id);
     });
 }
@@ -336,8 +388,36 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', activeTasks: Array.from(activeProcesses.keys()) });
 });
 
+app.get('/api/tasks/active', (req, res) => {
+    const logCounts = Object.fromEntries(
+        Array.from(taskLogs.entries()).map(([id, logs]) => [id, logs.length])
+    );
+    res.json({ activeTasks: Array.from(activeProcesses.keys()), logCounts });
+});
+
+app.get('/api/tasks/logs/:id', (req, res) => {
+    const id = req.params.id;
+    res.json({
+        id,
+        running: activeProcesses.has(id),
+        logs: taskLogs.get(id) || []
+    });
+});
+
 app.get('/api/runtime_config', (req, res) => {
-    res.json(runtimeConfig(loadConfig()));
+    const rawConfig = loadConfig();
+    const normalized = runtimeConfig(rawConfig);
+    const workspacePath = resolveFromProject(normalized.workspace);
+    const setupPath = workspaceSetup(normalized);
+    const mapsDirectory = mapsDir(normalized);
+    res.json({
+        ...normalized,
+        diagnostics: {
+            workspaceExists: fs.existsSync(workspacePath),
+            setupBashExists: fs.existsSync(setupPath),
+            mapsDirExists: fs.existsSync(mapsDirectory)
+        }
+    });
 });
 
 app.put('/api/runtime_config', (req, res) => {
@@ -608,6 +688,9 @@ app.post('/api/start_navigation', (req, res) => {
 
     const config = loadConfig();
     const tasks = config.tasks?.navigation || [];
+    if (tasks.length === 0) {
+        return res.status(404).json({ success: false, error: '导航任务未定义或为空，请先在系统配置中配置导航任务' });
+    }
     const selectedMap = path.isAbsolute(mapPath)
         ? path.normalize(mapPath)
         : path.resolve(mapsDir(config), mapPath);
@@ -649,6 +732,38 @@ app.post('/api/save_map', (req, res) => {
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/:collection', (req, res, next) => {
+    const collection = req.params.collection;
+    if (!STORE_COLLECTIONS.has(collection)) return next();
+    const filePath = path.join(dataDir, `${collection}.json`);
+    if (!fs.existsSync(filePath)) {
+        return res.json({ hasData: false, items: [] });
+    }
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const items = Array.isArray(parsed) ? parsed : [];
+        res.json({ hasData: true, items });
+    } catch (err) {
+        res.status(500).json({ success: false, error: `读取 ${collection} 数据失败: ${err.message}` });
+    }
+});
+
+app.put('/api/:collection', (req, res, next) => {
+    const collection = req.params.collection;
+    if (!STORE_COLLECTIONS.has(collection)) return next();
+    const items = req.body?.items;
+    if (!Array.isArray(items) || items.length > 2000) {
+        return res.status(400).json({ success: false, error: 'items 必须是长度不超过 2000 的数组' });
+    }
+    const filePath = path.join(dataDir, `${collection}.json`);
+    try {
+        writeJsonAtomic(filePath, items);
+        res.json({ success: true, count: items.length });
+    } catch (err) {
+        res.status(500).json({ success: false, error: `保存 ${collection} 数据失败: ${err.message}` });
     }
 });
 

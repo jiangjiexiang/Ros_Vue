@@ -146,8 +146,9 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { DEMO_ROBOTS } from './missionDemo.js'
+import { computed, onMounted, ref } from 'vue'
+import { useRobotStore } from '../../stores/robotStore.js'
+import { confirmDialog, showToast } from '../../stores/toastStore.js'
 import {
   MISSION_STATUSES,
   getActionLabel,
@@ -161,7 +162,8 @@ import MissionStatusBadge from './MissionStatusBadge.vue'
 
 const emit = defineEmits(['navigate'])
 const { navigate } = useMissionNavigation({}, emit)
-const { missions, storageError, duplicateMission, deleteMission } = useMissionStore()
+const { robots: configuredRobots } = useRobotStore()
+const { missions, storageError, initMissionsFromServer, duplicateMission, deleteMission } = useMissionStore()
 const keyword = ref('')
 const statusFilter = ref('all')
 const robotFilter = ref('all')
@@ -169,7 +171,7 @@ const notice = ref('')
 const errorMessage = ref('')
 
 const robotOptions = computed(() => {
-  const robots = new Map(DEMO_ROBOTS.map((robot) => [robot.id, robot]))
+  const robots = new Map(configuredRobots.value.map((robot) => [robot.id, { id: robot.id, name: robot.name }]))
   missions.value.forEach((mission) => {
     if (mission.robotId && !robots.has(mission.robotId)) {
       robots.set(mission.robotId, { id: mission.robotId, name: mission.robotName || mission.robotId })
@@ -237,18 +239,28 @@ function copyMission(mission) {
   }
 }
 
-function removeMission(mission) {
+async function removeMission(mission) {
   if (isActiveMission(mission)) return
-  if (!window.confirm(`确定删除任务“${mission.name}”吗？此操作不可恢复。`)) return
+  const confirmed = await confirmDialog({
+    title: '删除巡检任务',
+    message: `确定删除任务“${mission.name}”吗？此操作不可恢复。`,
+    confirmText: '确认删除',
+    danger: true
+  })
+  if (!confirmed) return
   notice.value = ''
   errorMessage.value = ''
   try {
     deleteMission(mission.id)
-    notice.value = `已删除“${mission.name}”。`
+    showToast(`已删除任务“${mission.name}”`, 'info')
   } catch (error) {
     errorMessage.value = error.message
   }
 }
+
+onMounted(() => {
+  initMissionsFromServer()
+})
 
 function uniqueActions(mission) {
   return [...new Set(mission.waypoints.flatMap((point) => point.actions))].map(getActionLabel)

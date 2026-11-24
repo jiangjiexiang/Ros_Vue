@@ -4,217 +4,221 @@
       <div>
         <div class="title-row">
           <h1>巡检总览</h1>
+          <span class="overview-date">{{ todayLabel }}</span>
         </div>
-        <p>核对实际接入方案，集中查看任务进展与待处理告警。</p>
+        <p>实时掌握机器狗在线状态、巡检任务进度与未闭环告警。</p>
       </div>
-      <span class="overview-date">{{ todayLabel }}</span>
+
+      <div class="overview-quick-actions">
+        <RouterLink class="quick-btn primary" to="/inspection">
+          <UiIcon name="activity" :size="15" />进入工作台
+        </RouterLink>
+        <RouterLink class="quick-btn" to="/missions/new">
+          <UiIcon name="route" :size="15" />新建巡检任务
+        </RouterLink>
+        <RouterLink class="quick-btn" to="/simulation">
+          <UiIcon name="cpu" :size="15" />启动仿真测试
+        </RouterLink>
+      </div>
     </header>
 
-    <AccessOverviewCard />
+    <section class="runtime-kpi-grid" aria-label="实时运行指标">
+      <article class="kpi-card" :class="{ online: isConnected }">
+        <div class="kpi-icon"><UiIcon name="robot" :size="20" /></div>
+        <div class="kpi-body">
+          <span>在线机器狗</span>
+          <strong>{{ isConnected ? 1 : 0 }} <small>/ {{ robots.length }} 台</small></strong>
+          <p>{{ activeRobot.name }} · {{ isConnected ? '通信正常' : statusText }}</p>
+        </div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-icon"><UiIcon name="battery" :size="20" /></div>
+        <div class="kpi-body">
+          <span>设备状态与电量</span>
+          <strong>{{ batteryDisplay }}</strong>
+          <p>{{ isConnected ? `${modeText} · 线速度 ${linearSpeed} m/s` : '等待机器狗接入' }}</p>
+        </div>
+      </article>
+
+      <article class="kpi-card">
+        <div class="kpi-icon"><UiIcon name="route" :size="20" /></div>
+        <div class="kpi-body">
+          <span>巡检任务</span>
+          <strong>{{ missions.length }} <small>项</small></strong>
+          <p>执行中 {{ runningMissionCount }} · 已完成 {{ completedMissionCount }}</p>
+        </div>
+      </article>
+
+      <article class="kpi-card" :class="{ alert: unhandledAlertCount > 0 }">
+        <div class="kpi-icon"><UiIcon name="alert" :size="20" /></div>
+        <div class="kpi-body">
+          <span>未闭环告警</span>
+          <strong>{{ unhandledAlertCount }} <small>条</small></strong>
+          <p>{{ criticalOpenCount > 0 ? `含 ${criticalOpenCount} 条严重告警待处理` : '暂无严重未闭环告警' }}</p>
+        </div>
+      </article>
+    </section>
 
     <div class="activity-grid">
       <section class="activity-panel">
         <div class="section-heading compact">
           <div>
-            <h2>最近任务</h2>
-            <p>按任务开始或计划时间排序</p>
+            <h2>最近巡检任务</h2>
+            <p>同步任务编排与实时执行进度</p>
           </div>
-          <span>{{ recentTasks.length }} 项</span>
+          <RouterLink class="panel-more-link" to="/missions">全部任务 →</RouterLink>
         </div>
         <div v-if="recentTasks.length" class="activity-list">
           <button
-            v-for="(task, index) in recentTasks"
-            :key="task.id || task.name || index"
+            v-for="task in recentTasks"
+            :key="task.id"
             type="button"
             class="activity-row"
-            @click="selectTask(task)"
+            @click="openTask(task)"
           >
             <span class="row-marker task"><UiIcon name="route" :size="16" /></span>
             <span class="row-main">
               <span class="row-title">
-                <strong>{{ textOrPlaceholder(task.name) }}</strong>
+                <strong>{{ task.name || '未命名任务' }}</strong>
                 <span class="status-tag" :class="taskStatusClass(task.status)">{{ taskStatusText(task.status) }}</span>
               </span>
-              <small>{{ textOrPlaceholder(task.dogName) }} · {{ formatDateTime(taskActivityTime(task)) }}</small>
+              <small>
+                {{ task.robotName || '未指定机器狗' }} · {{ task.waypoints.length }} 个巡检点 · {{ formatDateTime(task.updatedAt || task.createdAt) }}
+              </small>
             </span>
           </button>
         </div>
-        <div v-else class="empty-state">暂无任务数据</div>
+        <div v-else class="empty-state">暂无巡检任务，点击右上角“新建巡检任务”创建</div>
       </section>
 
       <section class="activity-panel">
         <div class="section-heading compact">
           <div>
             <h2>最新告警</h2>
-            <p>优先跟进未处理事件</p>
+            <p>优先关注待确认与严重告警</p>
           </div>
-          <span :class="{ 'has-alerts': unhandledCount > 0 }">{{ unhandledCountText }}</span>
+          <RouterLink class="panel-more-link" :class="{ 'has-alerts': unhandledAlertCount > 0 }" to="/alerts">
+            {{ unhandledAlertCount }} 条未闭环 →
+          </RouterLink>
         </div>
         <div v-if="latestAlerts.length" class="activity-list">
           <button
-            v-for="(alert, index) in latestAlerts"
-            :key="alert.id || alert.title || index"
+            v-for="alert in latestAlerts"
+            :key="alert.id"
             type="button"
             class="activity-row alert-row"
-            :class="alertLevelClass(alert.level)"
-            @click="selectAlert(alert)"
+            :class="alert.level"
+            @click="openAlert(alert)"
           >
-            <span class="row-marker"><UiIcon name="activity" :size="16" /></span>
+            <span class="row-marker"><UiIcon name="alert" :size="16" /></span>
             <span class="row-main">
               <span class="row-title">
-                <strong>{{ textOrPlaceholder(alert.title) }}</strong>
-                <span class="handled-tag" :class="{ handled: alert.handled === true }">
-                  {{ alert.handled === true ? '已处理' : '未处理' }}
+                <strong>{{ alert.title }}</strong>
+                <span class="handled-tag" :class="{ handled: alert.status === 'resolved' }">
+                  {{ alert.status === 'resolved' ? '已处理' : alert.status === 'acknowledged' ? '已确认' : '待确认' }}
                 </span>
               </span>
-              <small>{{ textOrPlaceholder(alert.dogName) }} · {{ formatDateTime(alert.timestamp) }}</small>
-              <p>{{ textOrPlaceholder(alert.message) }}</p>
+              <small>{{ alert.robotName }} · {{ formatDateTime(alert.occurredAt) }}</small>
+              <p>{{ alert.description }}</p>
             </span>
           </button>
         </div>
-        <div v-else class="empty-state">暂无告警数据</div>
+        <div v-else class="empty-state">当前暂无告警记录</div>
       </section>
     </div>
+
+    <AccessOverviewCard />
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import UiIcon from '../../components/UiIcon.vue'
 import AccessOverviewCard from './AccessOverviewCard.vue'
-import { DEMO_ALERTS, DEMO_TASKS } from './demoData.js'
+import { useRobotStore } from '../../stores/robotStore.js'
+import { useRosSessionStore } from '../../stores/rosSessionStore.js'
+import { useInspectionStore } from '../../stores/inspectionStore.js'
+import { useMissionStore } from '../missions/missionStore.js'
 
-/**
- * 数据字段：
- * tasks: [{ id, name, dogName, status, scheduledAt, startedAt?, completedAt?, route? }]
- * alerts: [{ id, title, message, dogName, level, handled, timestamp, route? }]
- * 时间使用 ISO 字符串或 Date 可解析值；任务状态支持 running/completed/failed/pending/cancelled。
- * 告警级别支持 critical/warning/info，handled !== true 时按未处理统计。
- * route 可为 vue-router 的 RouteLocationRaw，存在时优先于对应的路由模板 prop。
- * 路由模板字符串中的 :id 会被记录 ID 替换；不含 :id 时直接跳转该地址。
- */
-const props = defineProps({
-  demoMode: { type: Boolean, default: true },
-  tasks: { type: Array, default: null },
-  alerts: { type: Array, default: null },
-  taskRoute: { type: [String, Object], default: '/missions/:id/run' },
-  alertRoute: { type: [String, Object], default: '/alerts' }
-})
+const router = useRouter()
+const { robots, activeRobot } = useRobotStore()
+const { isConnected, statusText, modeText, linearSpeed, batteryPercentage } = useRosSessionStore()
+const { alerts, unhandledAlertCount, initInspectionStore } = useInspectionStore()
+const { missions, initMissionsFromServer } = useMissionStore()
 
-const emit = defineEmits(['task-select', 'alert-select'])
-const appRouter = useRouter()
-
-const taskList = computed(() => props.demoMode ? DEMO_TASKS : props.tasks)
-const alertList = computed(() => props.demoMode ? DEMO_ALERTS : props.alerts)
 const todayLabel = new Intl.DateTimeFormat('zh-CN', {
   year: 'numeric', month: 'long', day: 'numeric', weekday: 'short'
 }).format(new Date())
 
-const unhandledCount = computed(() => {
-  if (!Array.isArray(alertList.value)) return null
-  return alertList.value.filter((alert) => alert.handled !== true).length
+const batteryDisplay = computed(() => {
+  if (!isConnected.value) return '未连接'
+  if (batteryPercentage.value >= 0) return `${batteryPercentage.value}%`
+  return modeText.value
 })
-const unhandledCountText = computed(() => {
-  return unhandledCount.value === null ? '等待告警数据' : `${unhandledCount.value} 条未处理`
-})
-const recentTasks = computed(() => {
-  if (!Array.isArray(taskList.value)) return []
-  return [...taskList.value]
-    .sort((a, b) => timeValue(taskActivityTime(b)) - timeValue(taskActivityTime(a)))
+
+const runningMissionCount = computed(() => missions.value.filter((m) => m.status === 'running').length)
+const completedMissionCount = computed(() => missions.value.filter((m) => m.status === 'completed').length)
+const criticalOpenCount = computed(() => (
+  alerts.value.filter((a) => a.level === 'critical' && a.status !== 'resolved').length
+))
+
+const recentTasks = computed(() => (
+  [...missions.value]
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
     .slice(0, 5)
-})
-const latestAlerts = computed(() => {
-  if (!Array.isArray(alertList.value)) return []
-  return [...alertList.value]
-    .sort((a, b) => timeValue(b.timestamp) - timeValue(a.timestamp))
+))
+
+const latestAlerts = computed(() => (
+  [...alerts.value]
+    .sort((a, b) => {
+      const aOpen = a.status !== 'resolved' ? 1 : 0
+      const bOpen = b.status !== 'resolved' ? 1 : 0
+      if (aOpen !== bOpen) return bOpen - aOpen
+      return String(b.occurredAt || '').localeCompare(String(a.occurredAt || ''))
+    })
     .slice(0, 5)
-})
-
-function textOrPlaceholder(value) {
-  return typeof value === 'string' && value.trim() ? value : '--'
-}
-
-function taskActivityTime(task) {
-  return task.startedAt || task.completedAt || task.scheduledAt
-}
-
-function timeValue(value) {
-  const timestamp = new Date(value).getTime()
-  return Number.isFinite(timestamp) ? timestamp : 0
-}
-
-function isToday(value) {
-  const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return false
-  const now = new Date()
-  return date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate()
-}
+))
 
 function formatDateTime(value) {
   if (!value) return '--'
   const date = new Date(value)
-  if (!Number.isFinite(date.getTime())) return '--'
-  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-  return isToday(value) ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`
+  if (Number.isNaN(date.getTime())) return '--'
+  const now = new Date()
+  const sameDay = date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  const hhmm = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  return sameDay ? hhmm : `${date.getMonth() + 1}/${date.getDate()} ${hhmm}`
 }
 
 function taskStatusText(status) {
-  const labels = {
-    running: '执行中', completed: '已完成', failed: '失败', pending: '待执行', cancelled: '已取消'
-  }
-  return labels[status] || textOrPlaceholder(status)
+  return {
+    pending: '待执行',
+    running: '执行中',
+    paused: '已暂停',
+    completed: '已完成',
+    aborted: '已终止'
+  }[status] || status
 }
 
 function taskStatusClass(status) {
-  return ['running', 'completed', 'failed', 'pending', 'cancelled'].includes(status) ? status : 'unknown'
+  return ['running', 'completed', 'aborted', 'pending', 'paused'].includes(status) ? status : 'unknown'
 }
 
-function alertLevelClass(level) {
-  return ['critical', 'warning', 'info'].includes(level) ? level : 'unknown'
+function openTask(task) {
+  router.push(`/missions/${encodeURIComponent(task.id)}/run`)
 }
 
-function routeWithId(baseRoute, id) {
-  if (!baseRoute) return null
-  const hasId = id !== null && id !== undefined && id !== ''
-  const encodedId = hasId ? encodeURIComponent(String(id)) : ''
-  if (typeof baseRoute === 'string') {
-    if (!baseRoute.includes(':id')) return baseRoute
-    return hasId ? baseRoute.replace(':id', encodedId) : null
-  }
-  if (baseRoute.path) {
-    if (!baseRoute.path.includes(':id')) return { ...baseRoute }
-    if (!hasId) return null
-    return { ...baseRoute, path: baseRoute.path.replace(':id', encodedId) }
-  }
-  if (baseRoute.params && Object.prototype.hasOwnProperty.call(baseRoute.params, 'id')) {
-    if (!hasId) return null
-    return { ...baseRoute, params: { ...baseRoute.params, id: String(id) } }
-  }
-  return { ...baseRoute }
+function openAlert() {
+  router.push('/alerts')
 }
 
-function navigate(target) {
-  if (!target || !appRouter) return
-  try {
-    const navigation = appRouter.push(target)
-    navigation?.catch?.((error) => console.warn('[OverviewPage] 页面跳转失败：', error))
-  } catch (error) {
-    console.warn('[OverviewPage] 页面跳转失败：', error)
-  }
-}
-
-function selectTask(task) {
-  emit('task-select', task)
-  navigate(task.route || routeWithId(props.taskRoute, task.id))
-}
-
-function selectAlert(alert) {
-  emit('alert-select', alert)
-  navigate(alert.route || routeWithId(props.alertRoute, alert.id))
-}
+onMounted(() => {
+  initMissionsFromServer()
+  initInspectionStore()
+})
 </script>
 
 <style scoped>
@@ -223,51 +227,79 @@ function selectAlert(alert) {
   min-height: 100%;
   margin: 0 auto;
   padding: 24px;
-  overflow: visible;
   color: var(--text-primary);
 }
-.overview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.title-row { display: flex; align-items: center; gap: 10px; }
-.overview-header h1 { font-size: 1.35rem; font-weight: 650; letter-spacing: 0.02em; }
-.overview-header p { margin-top: 7px; color: var(--text-muted); font-size: 0.75rem; }
-.overview-date { padding-top: 4px; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.7rem; white-space: nowrap; }
-.activity-panel { margin-top: 18px; padding: 18px; border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: rgba(15, 28, 46, 0.78); box-shadow: var(--shadow-card); }
-.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
-.section-heading h2 { font-size: 0.88rem; font-weight: 600; }
-.section-heading p { margin-top: 5px; color: var(--text-muted); font-size: 0.65rem; }
-.section-heading > span { color: var(--text-muted); font-size: 0.67rem; white-space: nowrap; }
-.section-heading > span.has-alerts { color: var(--danger); }
-.activity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-.activity-panel { min-width: 0; }
-.section-heading.compact { padding-bottom: 13px; border-bottom: 1px solid var(--border-color); }
+.overview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.title-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.overview-header h1 { font-size: 1.4rem; font-weight: 650; letter-spacing: 0.02em; }
+.overview-header p { margin-top: 6px; color: var(--text-muted); font-size: var(--text-sm); }
+.overview-date { color: var(--text-secondary); font-family: var(--font-mono); font-size: var(--text-xs); }
+.overview-quick-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.quick-btn {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 0 14px;
+  border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-secondary);
+  background: var(--bg-card); font-size: var(--text-sm); font-weight: 500; text-decoration: none;
+  transition: var(--transition);
+}
+.quick-btn:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
+.quick-btn.primary { border-color: transparent; color: #f0fdff; background: var(--accent-gradient); }
+
+.runtime-kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.kpi-card {
+  display: flex; align-items: center; gap: 14px; min-width: 0; padding: 16px;
+  border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+.kpi-card.online { border-color: rgba(52, 211, 153, 0.3); }
+.kpi-card.alert { border-color: rgba(251, 113, 133, 0.32); }
+.kpi-icon {
+  display: grid; place-items: center; width: 42px; height: 42px; flex: 0 0 auto; border-radius: 10px;
+  color: var(--accent-primary); background: rgba(34, 211, 238, 0.08);
+}
+.kpi-card.online .kpi-icon { color: var(--success); background: rgba(52, 211, 153, 0.1); }
+.kpi-card.alert .kpi-icon { color: var(--danger); background: rgba(251, 113, 133, 0.1); }
+.kpi-body { min-width: 0; }
+.kpi-body span { display: block; color: var(--text-muted); font-size: var(--text-xs); }
+.kpi-body strong { display: block; margin-top: 6px; font-family: var(--font-mono); font-size: 1.32rem; font-weight: 600; }
+.kpi-body strong small { color: var(--text-secondary); font-size: var(--text-xs); font-weight: 400; }
+.kpi-body p { margin-top: 5px; overflow: hidden; color: var(--text-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+
+.activity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.activity-panel { min-width: 0; padding: 18px; border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: rgba(15, 28, 46, 0.82); box-shadow: var(--shadow-card); }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.section-heading h2 { font-size: 0.98rem; font-weight: 600; }
+.section-heading p { margin-top: 4px; color: var(--text-muted); font-size: var(--text-xs); }
+.section-heading.compact { padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+.panel-more-link { color: var(--accent-primary); font-size: var(--text-xs); text-decoration: none; white-space: nowrap; }
+.panel-more-link.has-alerts { color: var(--danger); }
 .activity-list { display: flex; flex-direction: column; }
-.activity-row { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 12px 7px; border: 0; border-bottom: 1px solid var(--border-color); border-radius: 5px; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; transition: var(--transition); }
+.activity-row { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 12px 8px; border: 0; border-bottom: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; transition: var(--transition); }
 .activity-row:last-child { border-bottom-color: transparent; }
 .activity-row:hover { background: var(--bg-soft); }
-.row-marker { display: grid; place-items: center; width: 29px; height: 29px; flex: 0 0 auto; border-radius: 8px; color: var(--warning); background: rgba(251, 191, 36, 0.06); }
-.row-marker.task { color: var(--accent-primary); background: rgba(34, 211, 238, 0.06); }
-.alert-row.critical .row-marker { color: var(--danger); background: rgba(251, 113, 133, 0.07); }
-.alert-row.info .row-marker { color: var(--accent-secondary); background: rgba(59, 130, 246, 0.07); }
+.row-marker { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; border-radius: 8px; color: var(--warning); background: rgba(251, 191, 36, 0.08); }
+.row-marker.task { color: var(--accent-primary); background: rgba(34, 211, 238, 0.08); }
+.alert-row.critical .row-marker { color: var(--danger); background: rgba(251, 113, 133, 0.09); }
+.alert-row.info .row-marker { color: var(--accent-secondary); background: rgba(59, 130, 246, 0.09); }
 .row-main { display: block; min-width: 0; flex: 1; }
 .row-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.row-title > strong { overflow: hidden; font-size: 0.73rem; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.row-main > small { display: block; margin-top: 5px; color: var(--text-muted); font-size: 0.61rem; }
-.row-main > p { margin-top: 6px; color: var(--text-secondary); font-size: 0.65rem; line-height: 1.5; }
-.status-tag, .handled-tag { flex: 0 0 auto; padding: 3px 6px; border-radius: 5px; color: var(--text-muted); background: var(--bg-soft); font-size: 0.57rem; }
-.status-tag.running { color: var(--accent-primary); background: rgba(34, 211, 238, 0.07); }
-.status-tag.completed { color: var(--success); background: rgba(52, 211, 153, 0.07); }
-.status-tag.failed { color: var(--danger); background: rgba(251, 113, 133, 0.07); }
-.status-tag.pending { color: var(--warning); background: rgba(251, 191, 36, 0.07); }
-.handled-tag { color: var(--danger); background: rgba(251, 113, 133, 0.07); }
-.handled-tag.handled { color: var(--text-muted); background: var(--bg-soft); }
-.empty-state { display: grid; place-items: center; min-height: 110px; border: 1px dashed var(--border-color); border-radius: var(--radius-md); color: var(--text-muted); font-size: 0.7rem; }
-@media (max-width: 1100px) {
-  .activity-grid { grid-template-columns: 1fr; gap: 0; }
+.row-title > strong { overflow: hidden; font-size: var(--text-sm); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.row-main > small { display: block; margin-top: 5px; color: var(--text-muted); font-size: var(--text-xs); }
+.row-main > p { margin-top: 5px; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.5; }
+.status-tag, .handled-tag { flex: 0 0 auto; padding: 3px 8px; border-radius: 6px; color: var(--text-muted); background: var(--bg-soft); font-size: var(--text-xs); }
+.status-tag.running { color: var(--accent-primary); background: rgba(34, 211, 238, 0.09); }
+.status-tag.completed { color: var(--success); background: rgba(52, 211, 153, 0.09); }
+.status-tag.aborted { color: var(--danger); background: rgba(251, 113, 133, 0.09); }
+.status-tag.pending, .status-tag.paused { color: var(--warning); background: rgba(251, 191, 36, 0.09); }
+.handled-tag { color: var(--danger); background: rgba(251, 113, 133, 0.09); }
+.handled-tag.handled { color: var(--success); background: rgba(52, 211, 153, 0.08); }
+.empty-state { display: grid; place-items: center; min-height: 120px; border: 1px dashed var(--border-color); border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); }
+
+@media (max-width: 1120px) {
+  .runtime-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .activity-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 640px) {
   .overview-page { padding: 14px; }
-  .overview-header { flex-direction: column; gap: 8px; }
-  .overview-date { padding-top: 0; }
-  .activity-panel { padding: 14px; }
+  .runtime-kpi-grid { grid-template-columns: 1fr; }
 }
 </style>
