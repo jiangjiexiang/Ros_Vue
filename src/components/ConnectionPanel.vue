@@ -28,7 +28,7 @@
 
       <div v-if="selectedRobot" class="selected-details">
         <span>{{ displayAddress(selectedRobot.url) }}</span>
-        <span>{{ selectedRobot.namespace ? `命名空间 ${selectedRobot.namespace}` : '无命名空间' }}</span>
+        <span v-if="selectedRobot.namespace">命名空间 {{ selectedRobot.namespace }}</span>
       </div>
 
       <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
