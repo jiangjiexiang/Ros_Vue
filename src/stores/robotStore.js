@@ -22,12 +22,17 @@ function defaultRobot() {
 function normalizeRobotItem(robot) {
   if (!robot || typeof robot !== 'object') return null
   if (!robot.id || !robot.name || !robot.url) return null
+  const transport = robot.transport === 'rosbridge'
+    ? 'rosbridge'
+    : robot.transport === 'doglink'
+      ? 'doglink'
+      : 'foxglove'
   return {
     id: String(robot.id),
     name: String(robot.name),
     url: String(robot.url),
     namespace: typeof robot.namespace === 'string' ? robot.namespace : '',
-    transport: robot.transport === 'rosbridge' ? 'rosbridge' : 'foxglove',
+    transport,
     lidarType: robot.lidarType === '3d' ? '3d' : '2d',
     slamAlgorithm: typeof robot.slamAlgorithm === 'string' && robot.slamAlgorithm ? robot.slamAlgorithm : 'slam_toolbox',
     localizationAlgorithm: typeof robot.localizationAlgorithm === 'string' && robot.localizationAlgorithm ? robot.localizationAlgorithm : 'amcl',

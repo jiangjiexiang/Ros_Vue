@@ -37,7 +37,7 @@
     <div v-if="activeScene" class="simulation-teleoperation">
       <JoystickControl
         :connected="Boolean(activeScene)"
-        :maxLinearSpeed="controlConfig.max_linear_speed ?? 0.5"
+        :maxLinearSpeed="controlConfig.max_linear_speed ?? 5"
         :maxAngularSpeed="controlConfig.max_angular_speed ?? 1.0"
         :commandRateHz="controlConfig.command_rate_hz ?? 10"
         @velocity-change="sendVelocity"

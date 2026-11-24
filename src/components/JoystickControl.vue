@@ -44,7 +44,7 @@ import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
   connected: Boolean,
-  maxLinearSpeed: { type: Number, default: 0.5 },
+  maxLinearSpeed: { type: Number, default: 5 },
   maxAngularSpeed: { type: Number, default: 1.0 },
   commandRateHz: { type: Number, default: 10 }
 })

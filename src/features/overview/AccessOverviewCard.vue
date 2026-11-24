@@ -160,7 +160,11 @@ const robotConfigs = computed(() => robots.value.map((robot, index) => {
   const lidar = robot.lidarType === '3d' ? '3d' : '2d'
   const slam = slamOptions.some((o) => o.key === robot.slamAlgorithm) ? robot.slamAlgorithm : 'slam_toolbox'
   const localization = localizationOptions.some((o) => o.key === robot.localizationAlgorithm) ? robot.localizationAlgorithm : 'amcl'
-  const transport = robot.transport === 'rosbridge' ? 'rosbridge' : 'foxglove'
+  const transport = robot.transport === 'rosbridge'
+    ? 'rosbridge'
+    : robot.transport === 'doglink'
+      ? 'doglink'
+      : 'foxglove'
   const algorithmPackage = (robot.algorithmPackage || '').trim()
   const algorithmLaunch = (robot.algorithmLaunch || '').trim()
   const customConfigMissing = (slam === 'custom' || localization === 'custom') && (!algorithmPackage || !algorithmLaunch)
@@ -186,7 +190,7 @@ const robotConfigs = computed(() => robots.value.map((robot, index) => {
     lidar,
     lidarLabel: `${lidar.toUpperCase()} 激光`,
     transport,
-    transportLabel: transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove',
+    transportLabel: transport === 'doglink' ? 'DogLink 自研' : transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove',
     slam,
     slamLabel: slamOptions.find((o) => o.key === slam)?.label || '自定义',
     localization,
@@ -211,7 +215,7 @@ const lidarCounts = computed(() => countBy(robotConfigs.value, 'lidar'))
 const transportSummary = computed(() => {
   if (!robotConfigs.value.length) return '未配置'
   const counts = countBy(robotConfigs.value, 'transport')
-  const labels = { foxglove: 'Foxglove', rosbridge: 'ROS Bridge' }
+  const labels = { doglink: 'DogLink', foxglove: 'Foxglove', rosbridge: 'ROS Bridge' }
   return Object.entries(counts)
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${labels[key] || key} ${count}`)

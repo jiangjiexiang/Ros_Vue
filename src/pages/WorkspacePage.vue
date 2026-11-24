@@ -35,6 +35,23 @@
       </div>
 
       <div class="workspace-toolbar-right">
+        <div v-if="viewMode !== 'cameras'" class="scene-dim-switch" role="group" aria-label="地图维度切换">
+          <button
+            type="button"
+            :class="{ active: sceneMode === '2d' }"
+            @click="sceneMode = '2d'"
+          >
+            2D 栅格
+          </button>
+          <button
+            type="button"
+            :class="{ active: sceneMode === '3d' }"
+            @click="sceneMode = '3d'"
+          >
+            3D 场景
+          </button>
+        </div>
+
         <button
           type="button"
           class="keyboard-toggle-btn"
@@ -71,6 +88,10 @@
         :planData="planData"
         :odomData="odomData"
         :imuData="imuData"
+        :pointCloudData="pointCloudData"
+        :registeredCloudData="registeredCloudData"
+        :fastlioPathData="fastlioPathData"
+        :sceneMode="sceneMode"
         :navFeedback="navFeedback"
         :batteryPercentage="batteryPercentage"
         :batteryVoltage="batteryVoltage"
@@ -90,6 +111,7 @@
         v-model:selectedMap="selectedScenePath"
         v-model:multiPointMode="multiPointMode"
         @connect="connectRobot"
+        @map-saved="mapsRevision++"
         @velocity-change="onVelocityChange"
         @stop-motion="onStopMotion"
         @goal-set="onGoalSet"
@@ -156,7 +178,31 @@
           </article>
         </div>
 
+        <SlamScene3D
+          v-if="sceneMode === '3d'"
+          :connected="isConnected"
+          :mapData="mapData"
+          :scanData="scanData"
+          :tfData="tfData"
+          :odomData="odomData"
+          :planData="planData"
+          :pointCloudData="pointCloudData"
+          :registeredCloudData="registeredCloudData"
+          :fastlioPathData="fastlioPathData"
+          :layers="mapLayers"
+          :isMapping="mappingActive"
+          :isNavigating="navigationActive"
+          v-model:isSettingPose="isSettingPose"
+          :multiPointMode="multiPointMode"
+          :waypoints="waypointQueue"
+          :activeWaypoint="activeWaypoint"
+          @goal-set="onGoalSet"
+          @waypoint-add="onWaypointAdd"
+          @initial-pose-set="onInitialPoseSet"
+        />
+
         <SlamMap
+          v-else
           ref="slamMapRef"
           :connected="isConnected"
           :mapData="mapData"
@@ -177,7 +223,7 @@
           @initial-pose-set="onInitialPoseSet"
         />
 
-        <div class="workspace-footer">
+        <div v-if="sceneMode === '2d'" class="workspace-footer">
           <span><i class="legend-dot robot"></i>机器狗位置</span>
           <span><i class="legend-dot scan"></i>激光扫描</span>
           <span><i class="legend-dot path"></i>规划路径</span>
@@ -272,6 +318,7 @@ import ConnectionPanel from '../components/ConnectionPanel.vue'
 import InspectionWorkspace from '../components/InspectionWorkspace.vue'
 import JoystickControl from '../components/JoystickControl.vue'
 import SlamMap from '../components/SlamMap.vue'
+import SlamScene3D from '../components/SlamScene3D.vue'
 import TelemetryPanel from '../components/TelemetryPanel.vue'
 import UiIcon from '../components/UiIcon.vue'
 import { useRobotStore } from '../stores/robotStore.js'
@@ -304,6 +351,9 @@ const {
   tfData,
   odomData,
   imuData,
+  pointCloudData,
+  registeredCloudData,
+  fastlioPathData,
   planData,
   cameraPrimary,
   cameraSecondary,
@@ -330,6 +380,7 @@ const {
 
 const slamMapRef = ref(null)
 const viewMode = ref(resolveInitialMode(route.query.mode))
+const sceneMode = ref('2d')
 
 function resolveInitialMode(queryMode) {
   if (queryMode === 'monitor' || queryMode === 'cameras') return queryMode
@@ -445,6 +496,33 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.scene-dim-switch {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: rgba(2, 8, 18, 0.36);
+}
+
+.scene-dim-switch button {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.scene-dim-switch button.active {
+  color: var(--accent-primary);
+  background: rgba(34, 211, 238, 0.12);
 }
 
 .keyboard-toggle-btn {

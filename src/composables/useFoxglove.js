@@ -527,6 +527,70 @@ function handleCdrMessage(subId, channel, buffer, offset) {
                 estimated_time_remaining: { sec: etaSec, nanosec: etaNsec },
                 distance_remaining: distance
             })
+        } else if (channel.schemaName === 'sensor_msgs/msg/PointCloud2' || channel.schemaName === 'sensor_msgs/PointCloud2') {
+            const stampSec = reader.readInt32()
+            const stampNsec = reader.readUint32()
+            const frameId = reader.readString()
+            const height = reader.readUint32()
+            const width = reader.readUint32()
+
+            const numFields = reader.readUint32()
+            const fields = []
+            for (let i = 0; i < numFields; i++) {
+                const name = reader.readString()
+                const offset = reader.readUint32()
+                const datatype = reader.readUint8()
+                const count = reader.readUint32()
+                fields.push({ name, offset, datatype, count })
+            }
+
+            const isBigendian = reader.readUint8() !== 0
+            const pointStep = reader.readUint32()
+            const rowStep = reader.readUint32()
+            const dataLen = reader.readUint32()
+            const dataStart = reader.pos
+            reader.pos += dataLen
+            const isDense = reader.readUint8() !== 0
+
+            const xField = fields.find((f) => f.name === 'x')
+            const yField = fields.find((f) => f.name === 'y')
+            const zField = fields.find((f) => f.name === 'z')
+            if (!xField || !yField || !zField || pointStep <= 0) {
+                callback({ header: { stamp: { sec: stampSec, nanosec: stampNsec }, frame_id: frameId }, count: 0, positions: new Float32Array(0) })
+                return
+            }
+
+            const maxPoints = Math.min(Math.floor(dataLen / pointStep), Math.max(width * height, 0) || Math.floor(dataLen / pointStep), 60000)
+            const positions = new Float32Array(maxPoints * 3)
+            const view = reader.view
+            const littleEndian = !isBigendian
+            const readCoord = (base, field) => {
+                if (field.datatype === 8) return view.getFloat64(base + field.offset, littleEndian)
+                return view.getFloat32(base + field.offset, littleEndian)
+            }
+
+            let validCount = 0
+            for (let i = 0; i < maxPoints; i++) {
+                const base = dataStart + i * pointStep
+                if (base + Math.max(xField.offset, yField.offset, zField.offset) + 4 > dataStart + dataLen) break
+                const x = readCoord(base, xField)
+                const y = readCoord(base, yField)
+                const z = readCoord(base, zField)
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue
+                positions[validCount * 3] = x
+                positions[validCount * 3 + 1] = y
+                positions[validCount * 3 + 2] = z
+                validCount += 1
+            }
+
+            callback({
+                header: { stamp: { sec: stampSec, nanosec: stampNsec }, frame_id: frameId },
+                width,
+                height,
+                is_dense: isDense,
+                count: validCount,
+                positions: validCount === maxPoints ? positions : positions.subarray(0, validCount * 3)
+            })
         } else {
             console.warn(`[Foxglove] 收到未知类型的 CDR 消息: ${channel.schemaName}`)
         }

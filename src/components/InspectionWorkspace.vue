@@ -81,7 +81,34 @@
         </article>
       </div>
 
+      <SlamScene3D
+        v-if="sceneMode === '3d'"
+        ref="slamSceneRef"
+        class="inspection-map"
+        :connected="connected"
+        :mapData="mapData"
+        :scanData="scanData"
+        :tfData="tfData"
+        :odomData="odomData"
+        :planData="planData"
+        :pointCloudData="pointCloudData"
+        :registeredCloudData="registeredCloudData"
+        :fastlioPathData="fastlioPathData"
+        :layers="mapLayers"
+        :isMapping="isMapping"
+        :isNavigating="isNavigating"
+        :isSettingPose="isSettingPose"
+        :multiPointMode="multiPointMode"
+        :waypoints="waypoints"
+        :activeWaypoint="activeWaypoint"
+        @update:isSettingPose="emit('update:isSettingPose', $event)"
+        @goal-set="emit('goal-set', $event)"
+        @waypoint-add="emit('waypoint-add', $event)"
+        @initial-pose-set="emit('initial-pose-set', $event)"
+      />
+
       <SlamMap
+        v-else
         class="inspection-map"
         :connected="connected"
         :mapData="mapData"
@@ -103,7 +130,7 @@
         @initial-pose-set="emit('initial-pose-set', $event)"
       />
 
-      <section class="card inspection-map-tools" aria-label="地图图层与操作提示">
+      <section v-if="sceneMode === '2d'" class="card inspection-map-tools" aria-label="地图图层与操作提示">
         <div class="map-tools-layers">
           <div class="layer-controls">
             <label
@@ -190,19 +217,21 @@
         </div>
 
         <div v-show="rightTab === 'mapping'" class="tab-panel-body">
-          <p class="algorithm-plan">{{ algorithmLabel }} · 启动命令在系统配置中管理</p>
           <MappingControl
             :connected="connected"
             :isMapping="isMapping"
+            :getMapPoints="() => slamSceneRef?.exportGlobalMapPoints?.() || []"
             @update:isMapping="emit('update:isMapping', $event)"
             @mappingStarted="emit('mapping-started')"
+            @mappingRestarted="onMappingRestarted"
+            @mapSaved="emit('map-saved')"
           />
         </div>
 
         <div v-show="rightTab === 'joystick'" class="tab-panel-body joystick-tab-wrap">
           <JoystickControl
             :connected="connected"
-            :maxLinearSpeed="controlConfig.max_linear_speed ?? 0.5"
+            :maxLinearSpeed="controlConfig.max_linear_speed ?? 5"
             :maxAngularSpeed="controlConfig.max_angular_speed ?? 1.0"
             :commandRateHz="controlConfig.command_rate_hz ?? 10"
             @velocity-change="emit('velocity-change', $event)"
@@ -229,6 +258,7 @@ import JoystickControl from './JoystickControl.vue'
 import MappingControl from './MappingControl.vue'
 import NavigationControl from './NavigationControl.vue'
 import SlamMap from './SlamMap.vue'
+import SlamScene3D from './SlamScene3D.vue'
 import TelemetryPanel from './TelemetryPanel.vue'
 import UiIcon from './UiIcon.vue'
 
@@ -246,6 +276,10 @@ const props = defineProps({
   planData: { type: Object, default: null },
   odomData: { type: Object, default: null },
   imuData: { type: Object, default: null },
+  pointCloudData: { type: Object, default: null },
+  registeredCloudData: { type: Object, default: null },
+  fastlioPathData: { type: Object, default: null },
+  sceneMode: { type: String, default: '2d' },
   navFeedback: { type: Object, default: null },
   batteryPercentage: { type: Number, default: -1 },
   batteryVoltage: { type: Number, default: 0 },
@@ -276,6 +310,7 @@ const emit = defineEmits([
   'initial-pose-set',
   'clear-waypoints',
   'mapping-started',
+  'map-saved',
   'navigation-started',
   'save-mission',
   'update:isSettingPose',
@@ -287,6 +322,11 @@ const emit = defineEmits([
 
 const cameraSlot = ref('primary')
 const rightTab = ref('navigation')
+const slamSceneRef = ref(null)
+
+function onMappingRestarted() {
+  slamSceneRef.value?.clearGlobalMap?.()
+}
 
 const activeCameraMessage = computed(() => (
   cameraSlot.value === 'secondary' ? props.cameraSecondary : props.cameraPrimary

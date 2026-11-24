@@ -15,6 +15,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "three": "^0.187.0",
     "vue": "^3.4.0",
     "vue-router": "^4.6.5"
   },

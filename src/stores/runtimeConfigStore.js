@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { API_BASE } from '../config.js'
 
 export const CONTROL_DEFAULTS = {
-  max_linear_speed: 0.5,
+  max_linear_speed: 5,
   max_angular_speed: 1.0,
   command_rate_hz: 10,
   command_timeout_ms: 600

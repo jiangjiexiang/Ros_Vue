@@ -35,7 +35,7 @@
 
         <dl>
           <div><dt>地址</dt><dd>{{ displayAddress(robot.url) }}</dd></div>
-          <div><dt>通信</dt><dd>{{ robot.transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove' }}</dd></div>
+          <div><dt>通信</dt><dd>{{ robot.transport === 'doglink' ? 'DogLink 自研' : robot.transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove' }}</dd></div>
           <div><dt>命名空间</dt><dd>{{ robot.namespace || '无' }}</dd></div>
           <div><dt>算法方案</dt><dd>{{ formatAlgorithmPlan(robot) }}</dd></div>
         </dl>
@@ -94,8 +94,9 @@
                 <label>
                   <span>通信方式</span>
                   <select v-model="form.transport" @change="changeTransport">
-                    <option value="foxglove">Foxglove（默认）</option>
-                    <option value="rosbridge">ROS Bridge（rosbridge_server）</option>
+                    <option value="doglink">DogLink 自研协议（8768 · 低延迟二进制）</option>
+                    <option value="foxglove">Foxglove（8765）</option>
+                    <option value="rosbridge">ROS Bridge（9090）</option>
                   </select>
                 </label>
               </div>
@@ -289,24 +290,28 @@ function formatAlgorithmPlan(robot) {
 }
 
 function changeTransport() {
-  if (form.port === '8765' || form.port === '9090') {
-    form.port = form.transport === 'rosbridge' ? '9090' : '8765'
+  if (['8765', '9090', '8768'].includes(form.port)) {
+    form.port = form.transport === 'rosbridge'
+      ? '9090'
+      : form.transport === 'doglink'
+        ? '8768'
+        : '8765'
   }
 }
 
 function useRealPreset() {
   form.name = '巡检机器狗'
-  form.transport = 'foxglove'
+  form.transport = 'doglink'
   form.host = ''
-  form.port = '8765'
+  form.port = '8768'
   form.namespace = ''
 }
 
 function useSimulationPreset() {
   form.name = 'Isaac 仿真机器狗'
-  form.transport = 'foxglove'
+  form.transport = 'doglink'
   form.host = window.location.hostname || 'localhost'
-  form.port = '8765'
+  form.port = '8768'
   form.namespace = ''
 }
 
@@ -399,7 +404,7 @@ function testConnectivity(robot) {
   const timer = setTimeout(() => finish('fail', '连接超时'), 2500)
 
   try {
-    const protocols = robot.transport === 'rosbridge' ? undefined : ['foxglove.websocket.v1']
+    const protocols = robot.transport === 'foxglove' || !robot.transport ? ['foxglove.websocket.v1'] : undefined
     socket = protocols ? new WebSocket(robot.url, protocols) : new WebSocket(robot.url)
     socket.onopen = () => {
       const rtt = Math.max(1, Math.round(performance.now() - startedAt))

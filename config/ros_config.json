@@ -1,10 +1,10 @@
 {
-    "workspace": "..",
+    "workspace": "../ros2_ws",
     "maps_dir": "maps",
     "control": {
-        "max_linear_speed": 0.5,
+        "max_linear_speed": 5,
         "max_angular_speed": 1,
-        "command_rate_hz": 10,
+        "command_rate_hz": 20,
         "command_timeout_ms": 600
     },
     "tasks": {
@@ -17,6 +17,15 @@
                     "run",
                     "foxglove_bridge",
                     "foxglove_bridge"
+                ],
+                "delay": 0
+            },
+            {
+                "id": "doglink",
+                "description": "DogLink 自研协议网关",
+                "command": "bash",
+                "args": [
+                    "scripts/start_doglink.sh"
                 ],
                 "delay": 0
             }
@@ -84,7 +93,22 @@
                 "delay": 1000
             }
         ],
-        "mapping": [],
+        "mapping": [
+            {
+                "id": "fastlio_mapping",
+                "description": "FAST-LIO 3D 建图节点",
+                "command": "ros2",
+                "args": [
+                    "run",
+                    "fast_lio",
+                    "fastlio_mapping",
+                    "--ros-args",
+                    "--params-file",
+                    "config/fastlio_sim.yaml"
+                ],
+                "delay": 0
+            }
+        ],
         "navigation": []
     },
     "save_map": {
@@ -99,10 +123,6 @@
     "topics": {
         "camera_primary": "/camera1/preview/compressed",
         "camera_secondary": "/camera2/preview/compressed",
-        "pointcloud": "/points",
-        "registered_cloud": "/cloud_registered",
-        "fastlio_odom": "/Odometry",
-        "fastlio_path": "/path",
         "cmd_vel": "/cmd_vel",
         "battery": "/battery",
         "map": "/map",
@@ -113,6 +133,10 @@
         "goal_pose": "/goal_pose",
         "initial_pose": "/initialpose",
         "navigate_feedback": "/navigate_to_pose/_action/feedback",
-        "imu": "/imu"
+        "imu": "/imu",
+        "pointcloud": "/points",
+        "registered_cloud": "/cloud_registered",
+        "fastlio_odom": "/Odometry",
+        "fastlio_path": "/path"
     }
 }

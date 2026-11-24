@@ -10,6 +10,8 @@ from pathlib import Path
 import rclpy
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Imu, LaserScan, PointCloud2, PointField
@@ -49,9 +51,11 @@ class IsaacPlatformBridge(Node):
         self.last_camera_error_log = 0.0
         self.last_pointcloud_error_log = 0.0
         self.battery_ticks = 0
+        self.prev_world_vel = None
+        self.prev_imu_time = None
 
         self.odom_publisher = self.create_publisher(Odometry, self.topics["odom"], 10)
-        self.imu_publisher = self.create_publisher(Imu, self.topics["imu"], qos_profile_sensor_data)
+        self.imu_publisher = self.create_publisher(Imu, self.topics["imu"], 10)
         self.scan_publisher = self.create_publisher(LaserScan, self.topics["scan"], qos_profile_sensor_data)
         self.pointcloud_publisher = self.create_publisher(
             PointCloud2, self.topics["pointcloud"], qos_profile_sensor_data
@@ -62,10 +66,13 @@ class IsaacPlatformBridge(Node):
             name: self.create_publisher(CompressedImage, self.topics[f"camera_{name}"], qos_profile_sensor_data)
             for name in ("primary", "secondary")
         }
+        self.status_cb_group = MutuallyExclusiveCallbackGroup()
+        self.camera_cb_group = MutuallyExclusiveCallbackGroup()
+        self.cloud_cb_group = MutuallyExclusiveCallbackGroup()
         self.cmd_subscription = self.create_subscription(Twist, self.topics["cmd_vel"], self.on_cmd_vel, 10)
-        self.status_timer = self.create_timer(0.05, self.publish_simulation_state)
-        self.camera_timer = self.create_timer(0.2, self.publish_camera_frames)
-        self.pointcloud_timer = self.create_timer(0.2, self.publish_pointcloud)
+        self.status_timer = self.create_timer(0.02, self.publish_simulation_state, callback_group=self.status_cb_group)
+        self.camera_timer = self.create_timer(1.0 / 30.0, self.publish_camera_frames, callback_group=self.camera_cb_group)
+        self.pointcloud_timer = self.create_timer(0.1, self.publish_pointcloud, callback_group=self.cloud_cb_group)
         self.get_logger().info(f"Isaac ROS 2 桥接已启动，控制服务: {self.control_url}")
 
     def request(self, path, payload=None, timeout=0.25):
@@ -128,7 +135,14 @@ class IsaacPlatformBridge(Node):
             points = data["points"]
             if not points:
                 return
-            coordinates = array("f", (coordinate for point in points for coordinate in point))
+            coordinates = array(
+                "f",
+                (
+                    val
+                    for point in points
+                    for val in (point[0], point[1], point[2], 100.0)
+                ),
+            )
             is_dense = all(math.isfinite(coordinate) for coordinate in coordinates)
             if sys.byteorder != "little":
                 coordinates.byteswap()
@@ -142,9 +156,10 @@ class IsaacPlatformBridge(Node):
                 PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
                 PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
                 PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+                PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
             ]
             message.is_bigendian = False
-            message.point_step = 12
+            message.point_step = 16
             message.row_step = message.point_step * message.width
             message.is_dense = is_dense
             message.data = coordinates.tobytes()
@@ -237,14 +252,34 @@ class IsaacPlatformBridge(Node):
         message = Imu()
         message.header.stamp = stamp
         message.header.frame_id = "base_link"
-        message.orientation.w = quaternion["w"]
-        message.orientation.x = quaternion["x"]
-        message.orientation.y = quaternion["y"]
-        message.orientation.z = quaternion["z"]
-        message.angular_velocity.x = velocity["angular"]["x"]
-        message.angular_velocity.y = velocity["angular"]["y"]
-        message.angular_velocity.z = velocity["angular"]["z"]
-        message.linear_acceleration_covariance[0] = -1.0
+        qw = float(quaternion["w"])
+        qx = float(quaternion["x"])
+        qy = float(quaternion["y"])
+        qz = float(quaternion["z"])
+        message.orientation.w = qw
+        message.orientation.x = qx
+        message.orientation.y = qy
+        message.orientation.z = qz
+        # Rotate world angular velocity and world gravity (0, 0, +9.81) into body frame via R(q*)
+        wx = float(velocity["angular"]["x"])
+        wy = float(velocity["angular"]["y"])
+        wz = float(velocity["angular"]["z"])
+        r00 = 1.0 - 2.0 * (qy * qy + qz * qz)
+        r01 = 2.0 * (qx * qy + qw * qz)
+        r02 = 2.0 * (qx * qz - qw * qy)
+        r10 = 2.0 * (qx * qy - qw * qz)
+        r11 = 1.0 - 2.0 * (qx * qx + qz * qz)
+        r12 = 2.0 * (qy * qz + qw * qx)
+        r20 = 2.0 * (qx * qz + qw * qy)
+        r21 = 2.0 * (qy * qz - qw * qx)
+        r22 = 1.0 - 2.0 * (qx * qx + qy * qy)
+        message.angular_velocity.x = r00 * wx + r01 * wy + r02 * wz
+        message.angular_velocity.y = r10 * wx + r11 * wy + r12 * wz
+        message.angular_velocity.z = r20 * wx + r21 * wy + r22 * wz
+        g = 9.81
+        message.linear_acceleration.x = r02 * g
+        message.linear_acceleration.y = r12 * g
+        message.linear_acceleration.z = r22 * g
         self.imu_publisher.publish(message)
 
     def publish_scan(self, stamp, ranges, lidar):
@@ -268,11 +303,14 @@ class IsaacPlatformBridge(Node):
 def main():
     rclpy.init()
     node = IsaacPlatformBridge()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

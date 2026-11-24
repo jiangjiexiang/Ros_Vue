@@ -71,7 +71,7 @@
           <div class="control-grid">
             <label>
               <span>最大线速度（m/s）</span>
-              <input v-model.number="form.control.max_linear_speed" type="number" required min="0.1" max="2" step="any">
+              <input v-model.number="form.control.max_linear_speed" type="number" required min="0.1" max="5" step="any">
               <small>范围 0.1～2 m/s。</small>
             </label>
             <label>
@@ -283,13 +283,13 @@ const TOPIC_GROUPS = [
 const PRESET_KEY_SET = new Set(TOPIC_GROUPS.flatMap((g) => g.keys))
 
 const controlDefaults = {
-  max_linear_speed: 0.5,
+  max_linear_speed: 5,
   max_angular_speed: 1.0,
   command_rate_hz: 10,
   command_timeout_ms: 600
 }
 const controlRules = [
-  { field: 'max_linear_speed', label: '最大线速度', min: 0.1, max: 2 },
+  { field: 'max_linear_speed', label: '最大线速度', min: 0.1, max: 5 },
   { field: 'max_angular_speed', label: '最大角速度', min: 0.1, max: 3 },
   { field: 'command_rate_hz', label: '指令频率', min: 1, max: 50, integer: true },
   { field: 'command_timeout_ms', label: '指令超时', min: 200, max: 3000, integer: true }

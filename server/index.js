@@ -19,13 +19,13 @@ const defaultCameraTopics = {
     camera_secondary: '/camera2/preview/compressed'
 };
 const defaultControlConfig = {
-    max_linear_speed: 0.5,
+    max_linear_speed: 5,
     max_angular_speed: 1.0,
     command_rate_hz: 10,
     command_timeout_ms: 600
 };
 const controlConfigRules = {
-    max_linear_speed: { min: 0.1, max: 2, integer: false },
+    max_linear_speed: { min: 0.1, max: 5, integer: false },
     max_angular_speed: { min: 0.1, max: 3, integer: false },
     command_rate_hz: { min: 1, max: 50, integer: true },
     command_timeout_ms: { min: 200, max: 3000, integer: true }
@@ -730,6 +730,115 @@ app.post('/api/save_map', (req, res) => {
                 res.status(500).json({ success: false, error: `保存失败，退出码: ${code}` });
             }
         });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/save_slam_map', (req, res) => {
+    const {
+        mapName,
+        points,
+        resolution = 0.05,
+        minObstacleZ = 0.14,
+        maxObstacleZ = 2.2
+    } = req.body || {};
+    if (typeof mapName !== 'string' || !mapName.trim()) {
+        return res.status(400).json({ success: false, error: '地图名称不能为空' });
+    }
+    if (!Array.isArray(points) || points.length < 9) {
+        return res.status(400).json({ success: false, error: '当前 3D 点云为空，请先建图积累点云后再保存' });
+    }
+
+    const config = loadConfig();
+    const directory = mapsDir(config);
+    const name = mapName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_').slice(0, 80);
+    const count = Math.floor(points.length / 3);
+    const resVal = Math.max(0.02, Math.min(0.5, Number(resolution) || 0.05));
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const x = points[i * 3];
+        const y = points[i * 3 + 1];
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minX)) {
+        return res.status(400).json({ success: false, error: '点云坐标无效' });
+    }
+
+    const pad = 0.5;
+    minX -= pad;
+    minY -= pad;
+    maxX += pad;
+    maxY += pad;
+    const width = Math.min(2000, Math.max(10, Math.ceil((maxX - minX) / resVal)));
+    const height = Math.min(2000, Math.max(10, Math.ceil((maxY - minY) / resVal)));
+    const grid = Buffer.alloc(width * height, 205); // 205 = unknown
+
+    for (let i = 0; i < count; i++) {
+        const x = points[i * 3];
+        const y = points[i * 3 + 1];
+        const z = points[i * 3 + 2];
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        const gx = Math.floor((x - minX) / resVal);
+        const gy = Math.floor((y - minY) / resVal);
+        if (gx < 0 || gx >= width || gy < 0 || gy >= height) continue;
+        const row = height - 1 - gy; // PGM top-down
+        const idx = row * width + gx;
+        if (z >= minObstacleZ && z <= maxObstacleZ) {
+            grid[idx] = 0; // occupied
+        } else if (z < minObstacleZ && grid[idx] !== 0) {
+            grid[idx] = 254; // free
+        }
+    }
+
+    try {
+        fs.mkdirSync(directory, { recursive: true });
+        const pgmPath = path.join(directory, `${name}.pgm`);
+        const yamlPath = path.join(directory, `${name}.yaml`);
+        const pcdPath = path.join(directory, `${name}.pcd`);
+
+        const pgmHeader = Buffer.from(`P5\n${width} ${height}\n255\n`, 'ascii');
+        fs.writeFileSync(pgmPath, Buffer.concat([pgmHeader, grid]));
+
+        const yamlBody = [
+            `image: ${name}.pgm`,
+            `mode: trinary`,
+            `resolution: ${resVal}`,
+            `origin: [${minX.toFixed(4)}, ${minY.toFixed(4)}, 0.0]`,
+            `negate: 0`,
+            `occupied_thresh: 0.65`,
+            `free_thresh: 0.25`,
+            ''
+        ].join('\n');
+        fs.writeFileSync(yamlPath, yamlBody, 'utf8');
+
+        const pcdLines = [
+            '# .PCD v0.7 - Point Cloud Data file format',
+            'VERSION 0.7',
+            'FIELDS x y z',
+            'SIZE 4 4 4',
+            'TYPE F F F',
+            'COUNT 1 1 1',
+            `WIDTH ${count}`,
+            'HEIGHT 1',
+            'VIEWPOINT 0 0 0 1 0 0 0',
+            `POINTS ${count}`,
+            'DATA ascii'
+        ];
+        for (let i = 0; i < count; i++) {
+            pcdLines.push(`${points[i * 3].toFixed(4)} ${points[i * 3 + 1].toFixed(4)} ${points[i * 3 + 2].toFixed(4)}`);
+        }
+        fs.writeFileSync(pcdPath, pcdLines.join('\n') + '\n', 'utf8');
+
+        res.json({ success: true, name, pgmPath, yamlPath, pcdPath, pointCount: count, width, height });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

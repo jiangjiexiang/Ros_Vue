@@ -44,6 +44,9 @@ const cameraPrimary = ref(null)
 const cameraSecondary = ref(null)
 const navFeedback = ref(null)
 const imuData = ref(null)
+const pointCloudData = ref(null)
+const registeredCloudData = ref(null)
+const fastlioPathData = ref(null)
 
 const mapLayers = ref({
   map: true,
@@ -75,6 +78,9 @@ let feedbackSubId = null
 let imuSubId = null
 let cameraPrimarySubId = null
 let cameraSecondarySubId = null
+let pointCloudSubId = null
+let registeredCloudSubId = null
+let fastlioPathSubId = null
 
 let keyboardInterval = null
 let initialized = false
@@ -139,6 +145,9 @@ function clearAllData() {
   cameraSecondary.value = null
   navFeedback.value = null
   imuData.value = null
+  pointCloudData.value = null
+  registeredCloudData.value = null
+  fastlioPathData.value = null
   waypointQueue.value = []
   activeWaypoint.value = null
   topics.value = []
@@ -158,6 +167,9 @@ function clearConnectionState() {
   imuSubId = null
   cameraPrimarySubId = null
   cameraSecondarySubId = null
+  pointCloudSubId = null
+  registeredCloudSubId = null
+  fastlioPathSubId = null
   clearAllData()
 }
 
@@ -311,6 +323,24 @@ function onChannelsReady(event) {
   if (!cameraSecondarySubId && robotTopics.value.camera_secondary) {
     cameraSecondarySubId = transport.subscribe(robotTopics.value.camera_secondary, (data) => {
       cameraSecondary.value = data
+    })
+  }
+
+  if (!pointCloudSubId && robotTopics.value.pointcloud) {
+    pointCloudSubId = transport.subscribe(robotTopics.value.pointcloud, (data) => {
+      pointCloudData.value = data
+    })
+  }
+
+  if (!registeredCloudSubId && robotTopics.value.registered_cloud) {
+    registeredCloudSubId = transport.subscribe(robotTopics.value.registered_cloud, (data) => {
+      registeredCloudData.value = data
+    })
+  }
+
+  if (!fastlioPathSubId && robotTopics.value.fastlio_path) {
+    fastlioPathSubId = transport.subscribe(robotTopics.value.fastlio_path, (data) => {
+      fastlioPathData.value = data
     })
   }
 }
@@ -556,6 +586,9 @@ export function useRosSessionStore() {
     cameraSecondary,
     navFeedback,
     imuData,
+    pointCloudData,
+    registeredCloudData,
+    fastlioPathData,
     mapLayers,
     connectionState,
     errorMessage,

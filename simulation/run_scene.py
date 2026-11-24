@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 def load_control_config():
     project_root = Path(__file__).resolve().parent.parent
     config_path = os.environ.get("ROS_CONFIG_FILE", project_root / "config" / "ros_config.json")
-    control = {"max_linear_speed": 0.5, "max_angular_speed": 1.0, "command_timeout_ms": 600}
+    control = {"max_linear_speed": 5.0, "max_angular_speed": 1.0, "command_timeout_ms": 600}
     try:
         with open(config_path, encoding="utf-8") as config_file:
             configured = json.load(config_file).get("control", {})
@@ -25,7 +25,7 @@ def load_control_config():
                 control[name] = value
     except (OSError, json.JSONDecodeError):
         pass
-    control["max_linear_speed"] = max(0.1, min(2.0, control["max_linear_speed"]))
+    control["max_linear_speed"] = max(0.1, min(5.0, control["max_linear_speed"]))
     control["max_angular_speed"] = max(0.1, min(3.0, control["max_angular_speed"]))
     control["command_timeout_ms"] = max(200, min(3000, round(control["command_timeout_ms"])))
     return control
@@ -107,7 +107,7 @@ LIDAR_METADATA = {
     "range_max": 12.0,
 }
 
-POINTCLOUD_UPDATE_PERIOD = 0.2
+POINTCLOUD_UPDATE_PERIOD = 0.1
 POINTCLOUD_METADATA = {
     "type": "multimesh_3d_lidar",
     "frame_id": "base_scan",
@@ -120,12 +120,12 @@ POINTCLOUD_METADATA = {
     "range_min": 0.05,
     "range_max": 20.0,
     "update_period": POINTCLOUD_UPDATE_PERIOD,
-    "rate_hz": 5.0,
+    "rate_hz": 10.0,
 }
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 360
-CAMERA_UPDATE_PERIOD = 0.2
+CAMERA_UPDATE_PERIOD = 1.0 / 30.0
 CAMERA_FRAME_IDS = {
     "primary": "camera_primary_optical_frame",
     "secondary": "camera_secondary_optical_frame",
@@ -549,7 +549,7 @@ def encode_camera(camera):
 
 def main():
     scene = SCENES[args_cli.scene]
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.005, device=args_cli.device))
+    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1.0 / 180.0, device=args_cli.device))
     sim.set_camera_view(eye=scene["camera"][0], target=scene["camera"][1])
     robot = design_scene(args_cli.scene)
     lidar = create_lidar()
