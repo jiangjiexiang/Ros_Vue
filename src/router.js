@@ -39,6 +39,7 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/overview' },
     featureRoute('/overview', 'overview', '总览', 'overview', 'overview/OverviewPage.vue'),
+    legacyRoute('/inspection', 'inspection', '巡检工作台'),
     legacyRoute('/monitor', 'monitor', '单机监控'),
     featureRoute('/missions', 'missions', '巡检任务', 'missions', 'missions/MissionListPage.vue'),
     featureRoute('/missions/new', 'mission-create', '新建巡检任务', 'missions', 'missions/MissionEditorPage.vue'),
@@ -49,6 +50,7 @@ const router = createRouter({
     featureRoute('/records/:id', 'record-detail', '巡检记录详情', 'records', 'records/RecordDetailPage.vue'),
     featureRoute('/alerts', 'alerts', '告警中心', 'alerts', 'alerts/AlertsPage.vue'),
     legacyRoute('/robots', 'robots', '机器狗管理'),
+    legacyRoute('/settings', 'settings', '系统配置'),
     { path: '/:pathMatch(.*)*', redirect: '/overview' }
   ],
   scrollBehavior: () => ({ top: 0 })

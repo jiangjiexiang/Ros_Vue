@@ -4,7 +4,7 @@
       <div class="mission-heading">
         <span class="mission-eyebrow">MISSION EDITOR</span>
         <h1>{{ isNew ? '新建巡检任务' : '编辑巡检任务' }}</h1>
-        <p>按执行顺序配置巡检点；坐标采用地图坐标系，朝向 yaw 使用弧度。</p>
+        <p>推荐先在巡检工作台的 SLAM 地图上选点，再配置停留、动作与执行参数；此处可微调坐标和顺序。</p>
       </div>
       <div class="mission-header-actions">
         <button class="mission-button" @click="goBack">← 返回列表</button>
@@ -51,11 +51,11 @@
                 <label for="mission-robot">执行机器狗 <strong>*</strong></label>
                 <select id="mission-robot" v-model="draft.robotId" class="mission-select" @change="updateRobot">
                   <option value="" disabled>请选择机器狗</option>
-                  <option v-for="robot in DEMO_ROBOTS" :key="robot.id" :value="robot.id">
+                  <option v-for="robot in robotChoices" :key="robot.id" :value="robot.id">
                     {{ robot.name }}
                   </option>
                 </select>
-                <span class="form-hint">{{ selectedRobot?.model || '请选择任务执行设备' }}</span>
+                <span class="form-hint">{{ selectedRobotHint }}</span>
               </div>
 
               <div class="form-field">
@@ -82,6 +82,9 @@
                 <label for="mission-dwell">新巡检点默认停留（秒）</label>
                 <input id="mission-dwell" v-model.number="draft.dwellSeconds" class="mission-input" type="number" min="1" max="600" step="1">
                 <span class="form-hint">新增点时带入，仍可为每个点单独调整。</span>
+                <button class="mission-button small inline-action" type="button" :disabled="!draft.waypoints.length" @click="applyDwellToAll">
+                  应用到全部巡检点
+                </button>
               </div>
               <div class="form-field">
                 <label for="mission-loops">循环次数</label>
@@ -97,6 +100,23 @@
               <div v-if="draft.onFailure === 'retry'" class="form-field">
                 <label for="mission-retries">失败重试次数</label>
                 <input id="mission-retries" v-model.number="draft.retryLimit" class="mission-input" type="number" min="1" max="5" step="1">
+              </div>
+              <div class="form-field">
+                <label for="mission-linear-speed">最大线速度（m/s）</label>
+                <input id="mission-linear-speed" v-model.number="draft.navigation.maxLinearSpeed" class="mission-input" type="number" min="0.1" max="2" step="0.1">
+              </div>
+              <div class="form-field">
+                <label for="mission-angular-speed">最大角速度（rad/s）</label>
+                <input id="mission-angular-speed" v-model.number="draft.navigation.maxAngularSpeed" class="mission-input" type="number" min="0.1" max="3" step="0.1">
+              </div>
+              <div class="form-field">
+                <label for="mission-goal-tolerance">目标容差（m）</label>
+                <input id="mission-goal-tolerance" v-model.number="draft.navigation.goalTolerance" class="mission-input" type="number" min="0.05" max="1" step="0.05">
+                <span class="form-hint">进入该范围后判定到达巡检点。</span>
+              </div>
+              <div class="form-field">
+                <label for="mission-navigation-timeout">单点导航超时（秒）</label>
+                <input id="mission-navigation-timeout" v-model.number="draft.navigation.navigationTimeoutSeconds" class="mission-input" type="number" min="5" max="600" step="1">
               </div>
             </div>
           </section>
@@ -140,7 +160,10 @@
                     </div>
                   </article>
                 </div>
-                <div v-else class="point-empty">尚无巡检点。添加点位后，可调整顺序和配置动作。</div>
+                <div v-else class="point-empty">
+                  <span>尚无巡检点。请先在 SLAM 地图上选点，再配置动作。</span>
+                  <button class="mission-button primary" type="button" @click="navigate('/inspection')">前往地图选点</button>
+                </div>
               </div>
             </section>
 
@@ -261,7 +284,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import UiIcon from '../../components/UiIcon.vue'
-import { DEMO_ROBOTS } from './missionDemo.js'
 import { loadMapScenes } from './missionMaps.js'
 import {
   ACTION_DEFINITIONS,
@@ -270,6 +292,7 @@ import {
   createEmptyMission,
   createWaypoint,
   getMapKey,
+  normalizeMission,
   validateMission
 } from './missionModel.js'
 import { useMissionStore } from './missionStore.js'
@@ -286,6 +309,7 @@ const draft = ref(createEmptyMission())
 const selectedWaypointId = ref('')
 const selectedMapKey = ref('')
 const mapOptions = ref([])
+const robotOptions = ref([])
 const mapLoading = ref(false)
 const mapSource = ref('')
 const mapMessage = ref('')
@@ -293,10 +317,58 @@ const notFound = ref(false)
 const sourceStatus = ref('pending')
 const errors = ref([])
 const newPoint = reactive({ name: '', x: 0, y: 0, yaw: 0 })
+const ROBOT_ALGORITHM_OPTIONS = {
+  '2d': {
+    slam: ['slam_toolbox', 'cartographer'],
+    localization: ['none', 'amcl', 'custom']
+  },
+  '3d': {
+    slam: ['fast_lio', 'fast_lio_localization', 'custom'],
+    localization: ['none', 'fast_lio_localization', 'custom']
+  }
+}
+const SLAM_ALGORITHM_LABELS = {
+  slam_toolbox: 'SLAM Toolbox',
+  cartographer: 'Cartographer',
+  fast_lio: 'FAST-LIO',
+  fast_lio_localization: 'FAST-LIO Localization（定位模式）',
+  custom: '自定义算法'
+}
+const LOCALIZATION_ALGORITHM_LABELS = {
+  none: '无单独定位',
+  amcl: 'AMCL',
+  fast_lio_localization: 'FAST-LIO Localization',
+  custom: '自定义定位'
+}
+
+function formatRobotAlgorithm(robot) {
+  const lidarType = robot.lidarType === '3d' ? '3d' : '2d'
+  const options = ROBOT_ALGORITHM_OPTIONS[lidarType]
+  const slamAlgorithm = options.slam.includes(robot.slamAlgorithm)
+    ? robot.slamAlgorithm
+    : options.slam[0]
+  let localizationAlgorithm = options.localization.includes(robot.localizationAlgorithm)
+    ? robot.localizationAlgorithm
+    : (lidarType === '2d' ? 'amcl' : 'none')
+  if (slamAlgorithm === 'fast_lio_localization' && localizationAlgorithm === 'fast_lio_localization') {
+    localizationAlgorithm = 'none'
+  }
+  return `${lidarType.toUpperCase()} · ${SLAM_ALGORITHM_LABELS[slamAlgorithm]} · ${LOCALIZATION_ALGORITHM_LABELS[localizationAlgorithm]}`
+}
 
 const isNew = computed(() => !routeMissionId.value)
 const editorLocked = computed(() => ['running', 'paused'].includes(sourceStatus.value))
-const selectedRobot = computed(() => DEMO_ROBOTS.find((robot) => robot.id === draft.value.robotId))
+const robotChoices = computed(() => {
+  const choices = robotOptions.value.map((robot) => ({ ...robot }))
+  if (draft.value.robotId && !choices.some((robot) => robot.id === draft.value.robotId)) {
+    choices.push({ id: draft.value.robotId, name: draft.value.robotName || '历史机器狗', model: '当前未接入' })
+  }
+  return choices
+})
+const selectedRobot = computed(() => robotChoices.value.find((robot) => robot.id === draft.value.robotId))
+const selectedRobotHint = computed(() => selectedRobot.value
+  ? `${selectedRobot.value.model} · ${formatRobotAlgorithm(selectedRobot.value)}`
+  : '请选择任务执行设备')
 const selectedPolicy = computed(() => FAILURE_POLICIES.find((policy) => policy.value === draft.value.onFailure))
 const selectedWaypoint = computed(() => draft.value.waypoints.find((point) => point.id === selectedWaypointId.value))
 const selectedWaypointIndex = computed(() => draft.value.waypoints.findIndex((point) => point.id === selectedWaypointId.value))
@@ -314,15 +386,34 @@ const mapSourceHint = computed(() => {
   return '地图路径将随任务保存，用于任务导航。'
 })
 
+function readWorkspaceDraft() {
+  try {
+    const value = localStorage.getItem('robot-console-inspection-draft-v1')
+    return value ? JSON.parse(value) : null
+  } catch {
+    return null
+  }
+}
+
 function loadDraft() {
   errors.value = []
   notFound.value = false
   sourceStatus.value = 'pending'
   if (!routeMissionId.value) {
+    const workspaceDraft = readWorkspaceDraft()
+    if (workspaceDraft) {
+      draft.value = normalizeMission({ ...workspaceDraft, id: '', status: 'pending' })
+      draft.value.id = ''
+      selectedWaypointId.value = draft.value.waypoints[0]?.id || ''
+      selectedMapKey.value = getMapKey(draft.value.map)
+      localStorage.removeItem('robot-console-inspection-draft-v1')
+      ensureMapSelection()
+      return
+    }
     draft.value = createEmptyMission()
-    const robot = DEMO_ROBOTS[0]
-    draft.value.robotId = robot.id
-    draft.value.robotName = robot.name
+    const robot = robotOptions.value[0]
+    draft.value.robotId = robot?.id || ''
+    draft.value.robotName = robot?.name || ''
     selectedWaypointId.value = ''
     selectedMapKey.value = ''
     ensureMapSelection()
@@ -363,6 +454,24 @@ function updateMap() {
   }
 }
 
+function loadRobotProfiles() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('robot-console-robots') || '[]')
+    robotOptions.value = Array.isArray(saved)
+      ? saved.filter((robot) => robot.id && robot.name && robot.url).map((robot) => ({
+        ...robot,
+        model: `${robot.transport === 'rosbridge' ? 'ROS Bridge' : 'Foxglove'}${robot.namespace ? ` · /${robot.namespace}` : ''}`
+      }))
+      : []
+  } catch {
+    robotOptions.value = []
+  }
+  if (!draft.value.robotId && robotOptions.value.length) {
+    draft.value.robotId = robotOptions.value[0].id
+    updateRobot()
+  }
+}
+
 async function loadMaps() {
   mapLoading.value = true
   mapMessage.value = ''
@@ -372,6 +481,12 @@ async function loadMaps() {
   mapMessage.value = result.error || (!result.maps.length ? '地图服务当前没有已保存地图，请先建图或稍后重试。' : '')
   ensureMapSelection()
   mapLoading.value = false
+}
+
+function applyDwellToAll() {
+  for (const waypoint of draft.value.waypoints) {
+    waypoint.dwellSeconds = draft.value.dwellSeconds
+  }
 }
 
 function addWaypoint() {
@@ -431,7 +546,10 @@ function openRun() {
 }
 
 watch(routeMissionId, loadDraft, { immediate: true })
-onMounted(loadMaps)
+onMounted(() => {
+  loadRobotProfiles()
+  loadMaps()
+})
 </script>
 
 <style scoped src="./missionShared.css"></style>
@@ -441,6 +559,7 @@ onMounted(loadMaps)
 .validation-errors ul { margin: 5px 0 0 18px; }
 .map-select-row { display: flex; gap: 7px; }
 .map-select-row .mission-select { flex: 1; }
+.inline-action { margin-top: 8px; }
 .spinning { animation: mission-spin 0.8s linear infinite; }
 @keyframes mission-spin { to { transform: rotate(360deg); } }
 .point-workspace { display: grid; grid-template-columns: minmax(310px, 360px) minmax(0, 1fr); align-items: start; gap: 16px; }
@@ -463,7 +582,7 @@ onMounted(loadMaps)
 .point-order-actions button { width: 25px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .point-order-actions button:hover:not(:disabled) { color: var(--accent-primary); background: var(--bg-soft); }
 .point-order-actions button.remove:hover:not(:disabled) { color: var(--danger); }
-.point-empty { padding: 25px 8px 8px; color: var(--text-muted); font-size: 0.67rem; line-height: 1.7; text-align: center; }
+.point-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 25px 8px 8px; color: var(--text-muted); font-size: 0.67rem; line-height: 1.7; text-align: center; }
 .point-detail-body { display: flex; flex-direction: column; gap: 19px; }
 .point-detail-empty { min-height: 320px; }
 .action-section { display: flex; flex-direction: column; gap: 10px; }

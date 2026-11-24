@@ -104,11 +104,13 @@ defineProps({
 const route = useRoute()
 const navItems = [
   { id: 'overview', label: '总览', to: '/overview', icon: 'compass' },
-  { id: 'monitor', label: '单机监控', to: '/monitor', icon: 'activity' },
+  { id: 'inspection', label: '巡检工作台', to: '/inspection', icon: 'activity' },
+  { id: 'monitor', label: '单机监控', to: '/monitor', icon: 'robot' },
   { id: 'missions', label: '巡检任务', to: '/missions', icon: 'route' },
   { id: 'maps', label: '地图场景', to: '/maps', icon: 'map' },
   { id: 'records', label: '巡检记录', to: '/records', icon: 'save' },
   { id: 'alerts', label: '告警中心', to: '/alerts', icon: 'alert' },
-  { id: 'robots', label: '机器狗管理', to: '/robots', icon: 'robot' }
+  { id: 'robots', label: '机器狗管理', to: '/robots', icon: 'robot' },
+  { id: 'settings', label: '系统配置', to: '/settings', icon: 'layers' }
 ]
 </script>

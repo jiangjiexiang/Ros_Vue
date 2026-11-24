@@ -9,18 +9,172 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const app = express();
 const activeProcesses = new Map();
+const simulationControlUrl = process.env.SIMULATION_CONTROL_URL || 'http://127.0.0.1:8766';
+const defaultCameraTopics = {
+    camera_primary: '/camera1/preview/compressed',
+    camera_secondary: '/camera2/preview/compressed'
+};
+const defaultControlConfig = {
+    max_linear_speed: 0.5,
+    max_angular_speed: 1.0,
+    command_rate_hz: 10,
+    command_timeout_ms: 600
+};
+const controlConfigRules = {
+    max_linear_speed: { min: 0.1, max: 2, integer: false },
+    max_angular_speed: { min: 0.1, max: 3, integer: false },
+    command_rate_hz: { min: 1, max: 50, integer: true },
+    command_timeout_ms: { min: 200, max: 3000, integer: true }
+};
+const runtimeTaskNames = ['mapping', 'navigation'];
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use((err, req, res, next) => {
+    if (err.type === 'entity.parse.failed') {
+        return res.status(400).json({ success: false, error: '请求 JSON 格式无效' });
+    }
+    next(err);
+});
+
+function runtimeConfigPath() {
+    return process.env.ROS_CONFIG_FILE || path.join(projectRoot, 'config/ros_config.json');
+}
 
 function loadConfig() {
     try {
-        const configPath = process.env.ROS_CONFIG_FILE || path.join(projectRoot, 'config/ros_config.json');
-        return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        return JSON.parse(fs.readFileSync(runtimeConfigPath(), 'utf8'));
     } catch (err) {
         console.error('无法读取 ROS 配置:', err.message);
         return { tasks: {} };
     }
+}
+
+function isRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function runtimeTasks(tasks) {
+    if (!Array.isArray(tasks)) return [];
+    return tasks.map((task) => ({
+        description: typeof task?.description === 'string' ? task.description : '',
+        command: typeof task?.command === 'string' ? task.command : '',
+        args: Array.isArray(task?.args) ? task.args.filter((arg) => typeof arg === 'string') : []
+    }));
+}
+
+function isValidControlValue(value, rule) {
+    return typeof value === 'number' && Number.isFinite(value) &&
+        value >= rule.min && value <= rule.max && (!rule.integer || Number.isInteger(value));
+}
+
+function runtimeControl(control) {
+    const source = isRecord(control) ? control : {};
+    return Object.fromEntries(Object.entries(controlConfigRules).map(([field, rule]) => [
+        field,
+        isValidControlValue(source[field], rule) ? source[field] : defaultControlConfig[field]
+    ]));
+}
+
+function runtimeConfig(config) {
+    const source = isRecord(config) ? config : {};
+    const sourceTopics = isRecord(source.topics) ? source.topics : {};
+    const topics = Object.fromEntries(Object.entries(sourceTopics)
+        .filter(([, value]) => typeof value === 'string'));
+    return {
+        topics: { ...defaultCameraTopics, ...topics },
+        workspace: typeof source.workspace === 'string' && source.workspace ? source.workspace : '..',
+        maps_dir: typeof source.maps_dir === 'string' && source.maps_dir ? source.maps_dir : 'maps',
+        control: runtimeControl(source.control),
+        tasks: {
+            mapping: runtimeTasks(source.tasks?.mapping),
+            navigation: runtimeTasks(source.tasks?.navigation)
+        }
+    };
+}
+
+function validateRuntimeConfig(body) {
+    if (!isRecord(body)) return '请求正文必须是 JSON 对象';
+    const allowedFields = new Set(['topics', 'workspace', 'maps_dir', 'control', 'tasks']);
+    const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
+    if (unknownFields.length) return `包含不支持的配置字段：${unknownFields.join('、')}`;
+
+    for (const field of ['workspace', 'maps_dir']) {
+        if (body[field] === undefined) continue;
+        if (typeof body[field] !== 'string' || !body[field].trim() || body[field].length > 1024) {
+            return `${field} 必须是非空字符串，且长度不能超过 1024 个字符`;
+        }
+    }
+
+    if (body.topics !== undefined) {
+        if (!isRecord(body.topics)) return 'topics 必须是对象';
+        if (Object.keys(body.topics).length > 100) return '话题数量不能超过 100 个';
+        for (const [name, topic] of Object.entries(body.topics)) {
+            if (!name.trim() || name.length > 128) return '话题名称不能为空，且长度不能超过 128 个字符';
+            if (typeof topic !== 'string' || !topic.startsWith('/') || topic.length > 1024) {
+                return `话题 ${name} 必须以 / 开头，且长度不能超过 1024 个字符`;
+            }
+        }
+    }
+
+    if (body.control !== undefined) {
+        if (!isRecord(body.control)) return 'control 必须是对象';
+        const unknownControlFields = Object.keys(body.control)
+            .filter((key) => !Object.hasOwn(controlConfigRules, key));
+        if (unknownControlFields.length) return `control 包含不支持字段：${unknownControlFields.join('、')}`;
+        for (const [field, rule] of Object.entries(controlConfigRules)) {
+            const value = body.control[field];
+            if (value === undefined) continue;
+            if (!isValidControlValue(value, rule)) {
+                return `${field} 必须是 ${rule.min}～${rule.max} 范围内的${rule.integer ? '整数' : '数值'}`;
+            }
+        }
+    }
+
+    if (body.tasks !== undefined) {
+        if (!isRecord(body.tasks)) return 'tasks 必须是对象';
+        const unknownTasks = Object.keys(body.tasks).filter((key) => !runtimeTaskNames.includes(key));
+        if (unknownTasks.length) return `不支持编辑任务：${unknownTasks.join('、')}`;
+        for (const taskName of runtimeTaskNames) {
+            if (body.tasks[taskName] === undefined) continue;
+            const tasks = body.tasks[taskName];
+            if (!Array.isArray(tasks)) return `${taskName} 必须是任务数组`;
+            if (tasks.length > 100) return `${taskName} 的任务数量不能超过 100 个`;
+            for (let index = 0; index < tasks.length; index++) {
+                const task = tasks[index];
+                const label = `${taskName} 第 ${index + 1} 个任务`;
+                if (!isRecord(task)) return `${label} 必须是对象`;
+                const unknownTaskFields = Object.keys(task)
+                    .filter((key) => !['description', 'command', 'args'].includes(key));
+                if (unknownTaskFields.length) return `${label} 包含不支持字段：${unknownTaskFields.join('、')}`;
+                if (task.description !== undefined &&
+                    (typeof task.description !== 'string' || task.description.length > 512)) {
+                    return `${label} 的 description 必须是长度不超过 512 个字符的字符串`;
+                }
+                if (typeof task.command !== 'string' || !task.command.trim() || task.command.length > 2048) {
+                    return `${label} 的 command 必须是非空字符串，且长度不能超过 2048 个字符`;
+                }
+                if (!Array.isArray(task.args) || task.args.length > 200 ||
+                    task.args.some((arg) => typeof arg !== 'string' || arg.length > 2048)) {
+                    return `${label} 的 args 必须是最多 200 项的字符串数组，每项不能超过 2048 个字符`;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function editableTask(task, previousTask, taskName, index) {
+    const result = {
+        id: typeof previousTask?.id === 'string' && previousTask.id
+            ? previousTask.id
+            : `${taskName}-${index + 1}`,
+        description: task.description?.trim() || '',
+        command: task.command.trim(),
+        args: [...task.args]
+    };
+    if (typeof previousTask?.delay === 'number') result.delay = previousTask.delay;
+    return result;
 }
 
 function resolveFromProject(directory = '.') {
@@ -183,7 +337,93 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/runtime_config', (req, res) => {
-    res.json({ topics: loadConfig().topics || {} });
+    res.json(runtimeConfig(loadConfig()));
+});
+
+app.put('/api/runtime_config', (req, res) => {
+    const validationError = validateRuntimeConfig(req.body);
+    if (validationError) return res.status(400).json({ success: false, error: validationError });
+
+    const configPath = runtimeConfigPath();
+    let currentConfig;
+    try {
+        currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (!isRecord(currentConfig)) throw new Error('配置根节点不是对象');
+    } catch (err) {
+        console.error('读取待保存的 ROS 配置失败:', err.message);
+        return res.status(500).json({ success: false, error: '读取配置文件失败，未保存任何修改' });
+    }
+
+    const updatedConfig = { ...currentConfig };
+    if (req.body.workspace !== undefined) updatedConfig.workspace = req.body.workspace.trim();
+    if (req.body.maps_dir !== undefined) updatedConfig.maps_dir = req.body.maps_dir.trim();
+    if (req.body.topics !== undefined) {
+        updatedConfig.topics = { ...defaultCameraTopics, ...req.body.topics };
+    }
+    if (req.body.control !== undefined) {
+        updatedConfig.control = runtimeControl({ ...currentConfig.control, ...req.body.control });
+    }
+    if (req.body.tasks !== undefined) {
+        const currentTasks = isRecord(currentConfig.tasks) ? currentConfig.tasks : {};
+        updatedConfig.tasks = { ...currentTasks };
+        for (const taskName of runtimeTaskNames) {
+            if (req.body.tasks[taskName] === undefined) continue;
+            const previousTasks = Array.isArray(currentTasks[taskName]) ? currentTasks[taskName] : [];
+            updatedConfig.tasks[taskName] = req.body.tasks[taskName]
+                .map((task, index) => editableTask(task, previousTasks[index], taskName, index));
+        }
+    }
+
+    const tempPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+        fs.writeFileSync(tempPath, `${JSON.stringify(updatedConfig, null, 4)}\n`, 'utf8');
+        fs.renameSync(tempPath, configPath);
+        res.json({ success: true, config: runtimeConfig(updatedConfig) });
+    } catch (err) {
+        fs.rmSync(tempPath, { force: true });
+        console.error('保存 ROS 配置失败:', err.message);
+        res.status(500).json({ success: false, error: '保存配置失败，请检查配置文件及目录权限' });
+    }
+});
+
+async function simulationRequest(path, options = {}) {
+    const response = await fetch(`${simulationControlUrl}${path}`, {
+        ...options,
+        signal: AbortSignal.timeout(1500)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `仿真控制服务 HTTP ${response.status}`);
+    return data;
+}
+
+app.get('/api/simulation/status', async (req, res) => {
+    try {
+        res.json(await simulationRequest('/status'));
+    } catch (err) {
+        res.status(503).json({ ready: false, error: '仿真控制服务未连接' });
+    }
+});
+
+app.post('/api/simulation/velocity', async (req, res) => {
+    const { linearX, angularZ } = req.body || {};
+    const control = runtimeControl(loadConfig().control);
+    if (typeof linearX !== 'number' || !Number.isFinite(linearX) || Math.abs(linearX) > control.max_linear_speed ||
+        typeof angularZ !== 'number' || !Number.isFinite(angularZ) || Math.abs(angularZ) > control.max_angular_speed) {
+        return res.status(400).json({
+            success: false,
+            error: `线速度范围为 ±${control.max_linear_speed} m/s，角速度范围为 ±${control.max_angular_speed} rad/s`
+        });
+    }
+    try {
+        const data = await simulationRequest('/velocity', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ linearX, angularZ })
+        });
+        res.json(data);
+    } catch (err) {
+        res.status(503).json({ success: false, error: '仿真控制服务未连接，请先启动场景' });
+    }
 });
 
 app.post('/api/run_task/:taskName', (req, res) => {
@@ -428,8 +668,9 @@ if (fs.existsSync(dist)) {
     });
 }
 
-app.listen(3000, '0.0.0.0', () => {
-    console.log('后端已启动: http://localhost:3000');
+const port = Number(process.env.PORT || 3000);
+const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`后端已启动: http://localhost:${server.address().port}`);
 });
 
 const config = loadConfig();

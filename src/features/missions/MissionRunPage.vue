@@ -139,6 +139,9 @@
               <div><dt>异常处理</dt><dd>{{ getFailureLabel(mission.onFailure) }}</dd></div>
               <div v-if="mission.onFailure === 'retry'"><dt>重试次数</dt><dd>{{ mission.retryLimit }} 次</dd></div>
               <div><dt>默认停留</dt><dd>{{ mission.dwellSeconds }} 秒</dd></div>
+              <div><dt>速度上限</dt><dd>{{ mission.navigation.maxLinearSpeed }} m/s · {{ mission.navigation.maxAngularSpeed }} rad/s</dd></div>
+              <div><dt>目标容差</dt><dd>{{ mission.navigation.goalTolerance }} m</dd></div>
+              <div><dt>单点导航超时</dt><dd>{{ mission.navigation.navigationTimeoutSeconds }} 秒</dd></div>
               <div><dt>开始时间</dt><dd>{{ formatDate(mission.run.startedAt) }}</dd></div>
               <div><dt>结束时间</dt><dd>{{ formatDate(mission.run.completedAt || mission.run.abortedAt) }}</dd></div>
             </dl>

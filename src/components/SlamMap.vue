@@ -36,7 +36,7 @@
         @touchmove.prevent="onTouchMove"
         @touchend="onMouseUp"
         @dblclick="onDblClick"
-        :style="{ cursor: isSettingPose ? 'crosshair' : isNavigating ? 'crosshair' : (isDragging ? 'grabbing' : 'grab') }"
+        :style="{ cursor: isSettingPose || isNavigating || multiPointMode ? 'crosshair' : (isDragging ? 'grabbing' : 'grab') }"
       >
         <canvas ref="mapCanvasRef" />
         <div class="map-info">
@@ -45,7 +45,7 @@
         </div>
         
         <!-- 悬浮操作提示 -->
-        <div v-if="isNavigating && !isSettingPose" class="map-overlay-hint hint-goal">
+        <div v-if="(isNavigating || multiPointMode) && !isSettingPose" class="map-overlay-hint hint-goal">
           {{ multiPointMode ? '双击地图可连续添加航点' : '双击地图设定导航目标点' }}
         </div>
         <div v-if="isSettingPose" class="map-overlay-hint hint-pose">
@@ -596,7 +596,7 @@ watch(() => props.planData, (newData) => {
 }, { deep: true })
 
 // ==================== TF 树管理 ====================
-// ROS 2 的 TF 树通常是: map -> odom -> base_link -> base_scan
+// 支持 map/odom/base_link 以及 FAST-LIO 的 camera_init/body 坐标链
 // /tf 话题分别发布各段变换，我们需要缓存并组合它们
 
 const tfTree = {}  // { 'parent|child': { translation, rotation } }
@@ -658,6 +658,7 @@ watch(() => props.tfData, (newData) => {
   // 无地图时退回到 odom 坐标系
   if (!pose) pose = lookupTf('odom', 'base_link')
   if (!pose) pose = lookupTf('odom', 'base_footprint')
+  if (!pose) pose = lookupTf('camera_init', 'body')
   
   if (pose) {
     robotPose.value = pose
@@ -667,6 +668,7 @@ watch(() => props.tfData, (newData) => {
   const scanFrame = props.scanData?.header?.frame_id || 'base_scan'
   let sOffset = lookupTf('base_link', scanFrame)
   if (!sOffset) sOffset = lookupTf('base_footprint', scanFrame)
+  if (!sOffset) sOffset = lookupTf('body', scanFrame)
   if (sOffset) {
     sensorOffset.value = sOffset
   }
@@ -822,7 +824,7 @@ function onMouseUp(e) {
 
 // 双击设定导航目标点
 function onDblClick(e) {
-  if (!props.isNavigating) return
+  if (!props.isNavigating && !props.multiPointMode) return
   if (props.isSettingPose) return
   const rect = containerRef.value.getBoundingClientRect()
   const canvasX = (e.clientX - rect.left - offsetX.value) / scale.value

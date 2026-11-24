@@ -35,7 +35,13 @@ bash scripts/start_console.sh
 
 ## 配置
 
-通常只需要修改 `config/ros_config.json`：
+优先在网页“系统配置”中修改，保存后立即写入配置文件，不需要修改前端或后端代码。可配置 ROS 工作空间、地图目录、全部 ROS 话题（包括相机和 3D 点云）、全局线/角速度、指令频率、断链停车时间以及建图和导航任务。话题修改后请重新连接机器人，任务修改后请重启对应任务。
+
+“机器狗管理”可为每台设备选择 2D/3D 雷达、建图算法和定位方式。2D 支持 SLAM Toolbox、Cartographer 和 AMCL；3D 支持 FAST-LIO 与 FAST-LIO Localization，也可填写自定义 ROS 包和 Launch 文件名。首页只展示这些实际配置，不代表算法已在线运行。
+
+FAST-LIO 接入默认点云为 `/points`、IMU 为 `/imu`；常见输出为 `/Odometry`、`/cloud_registered`、`/path` 和 `camera_init → body` TF。平台会在选择 FAST-LIO 且未另改里程计时使用 `/Odometry`，并兼容其 TF 坐标链。所有话题仍可在系统配置中修改。算法本体及所需 ROS 包由机器人侧部署，平台负责配置、启动任务管理和结果接入。
+
+也可以手工修改 `config/ros_config.json`：
 
 ```json
 {
@@ -56,16 +62,20 @@ bash scripts/start_console.sh
 左侧导航包含七个页面：
 
 - **巡检总览**：机器狗状态、任务进展、完成率和最新告警。
+- **巡检工作台**：机器狗机载实时画面、SLAM、导航点、建图和运动控制集中在同一页面。
 - **单机监控**：实时地图、运动控制、遥测和图层。
 - **巡检任务**：任务列表、巡检点与动作编辑、执行进度和控制。
 - **地图场景**：建图、导航、多场景切换和栅格地图编辑。
 - **巡检记录**：任务筛选、巡检点结果、传感器读数和时间线。
 - **告警中心**：告警筛选、确认、处理和关联任务回溯。
-- **机器狗管理**：后台新增、编辑、删除和切换机器狗配置。
+- **机器狗管理**：新增、编辑、删除和切换机器狗配置，支持实体机器狗与本机仿真一键接入。
+- **系统配置**：在线修改 ROS 工作空间、地图目录、全部话题、相机以及建图和导航任务参数。
 
-主页的“机器人连接”只需从下拉框选择后台配置好的机器人，选择后会自动连接或切换，不需要重复输入 IP，也没有手动连接/断开按钮。
+“巡检工作台”的“机器人连接”只需从下拉框选择配置好的机器人，选择后会自动连接或切换，不需要重复输入 IP，也没有手动连接/断开按钮。
 
-机器人配置保存在当前浏览器的 `localStorage`。每台机器人支持独立局域网 IP / 主机名、端口和可选话题命名空间，例如命名空间为 `robot2` 时，`/scan` 会转换为 `/robot2/scan`。Foxglove 默认端口为 `8765`，页面会自动生成对应的 WebSocket 地址。
+机器人配置保存在当前浏览器的 `localStorage`。每台机器人支持独立局域网 IP / 主机名、端口、通信协议和可选话题命名空间，例如命名空间为 `robot2` 时，`/scan` 会转换为 `/robot2/scan`。默认使用 Foxglove（本机桥接包为 MIT 许可证），端口为 `8765`，页面会自动生成对应的 WebSocket 地址。
+
+也提供 ROS 原生 `rosbridge_server` 适配器，默认端口为 `9090`。该选项需要先安装 `ros-humble-rosbridge-suite` 并完成部署验证，当前默认仍为已经完整验证的 Foxglove。
 
 当前为一个活动连接：切换机器人会断开上一台并清空其地图与遥测，再连接新机器人，避免不同机器人的数据混在同一地图中。
 
@@ -127,3 +137,48 @@ ROS_CONFIG_FILE=/path/to/test_config.json bash scripts/start_console.sh
 ```
 
 网页和 Foxglove 可以独立运行；实际建图、保存地图和导航需要你的 ROS 环境提供对应功能包。
+
+## GPU 仿真测试
+
+项目提供三个 Isaac Sim 场景，均使用 Unitree Go2 关节模型、真实碰撞和 CUDA 物理计算：
+
+- `indoor`：室内巡检，包含办公室隔墙、门洞、桌椅和巡检柜。
+- `warehouse`：仓库障碍，包含货架、堆垛、安全柱和窄通道。
+- `outdoor`：户外坡道，包含 12° 连续坡道、平台、台阶和岩石。
+
+在“地图场景 → 仿真测试”中启动或切换场景，也可以从终端运行：
+
+```bash
+bash scripts/start_simulation.sh indoor
+bash scripts/start_simulation.sh warehouse
+bash scripts/start_simulation.sh outdoor
+```
+
+场景会在本机 Isaac Sim 图形窗口中打开，Go2 默认保持站立，蓝色圆环为建议巡检点。启动后，网页会显示运动摇杆和位置、朝向、速度遥测；拖动摇杆可以控制前进、后退和转向，松手或点击“停止运动”即停车，控制指令超过 0.6 秒未更新也会自动停车。
+
+默认使用 `cuda:0`，可通过 `SIM_DEVICE` 修改设备，通过 `ISAACLAB_PYTHON` 指定 Isaac Lab Python 解释器。网页速度指令由后端转发到本机 `8766` 端口，可用 `SIMULATION_CONTROL_URL` 修改后端连接地址。
+
+每个场景会同时启动 ROS 2 双向桥接，提供以下话题：
+
+- 订阅 `/cmd_vel`（`geometry_msgs/Twist`），网页可通过 Foxglove 使用同一话题控制仿真。
+- 发布 `/odom`、`/imu`、`/scan` 和 `/battery`。
+- 发布 `/points`（`PointCloud2`）：16 通道、360°、2° 水平分辨率、20 m 量程、5 Hz，供 3D 接入链路验证。
+- 发布双路 `/camera1/preview/compressed`、`/camera2/preview/compressed`，分别为 Go2 机载第一视角和场景观察视角（640×360、5 Hz、JPEG）。
+- 发布 `map → odom → base_link → base_scan` 的 `/tf`，巡检工作台可以显示机器狗位置与 360° 二维激光点。
+
+可在终端验证：
+
+```bash
+ros2 topic list
+ros2 topic echo /odom --once
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{linear: {x: 0.3}, angular: {z: 0.0}}'
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{linear: {x: 0.0}, angular: {z: 0.0}}'
+```
+
+无界面物理自检（以室内场景为例）：
+
+```bash
+bash scripts/start_simulation.sh indoor --headless --test-steps 120
+```
+
+仿真运动使用简化步态和基座速度控制，用于验证网页、Foxglove、ROS 2、场景显示与基础碰撞，不是训练后的运动策略。建图和导航仍需安装并配置 SLAM、Nav2 功能包，不能直接替代真实步态与整机联调。

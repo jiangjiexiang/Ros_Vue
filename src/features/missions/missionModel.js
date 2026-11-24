@@ -61,6 +61,15 @@ export function createActionSettings(settings = {}) {
   }
 }
 
+export function createNavigationSettings(settings = {}) {
+  return {
+    maxLinearSpeed: Math.max(0.1, Math.min(2.0, numberOr(settings.maxLinearSpeed, 0.5))),
+    maxAngularSpeed: Math.max(0.1, Math.min(3.0, numberOr(settings.maxAngularSpeed, 1.0))),
+    goalTolerance: Math.max(0.05, Math.min(1.0, numberOr(settings.goalTolerance, 0.15))),
+    navigationTimeoutSeconds: Math.max(5, Math.min(600, Math.round(numberOr(settings.navigationTimeoutSeconds, 60))))
+  }
+}
+
 export function createWaypoint(input = {}, index = 0) {
   const validActions = ACTION_DEFINITIONS.map((action) => action.value)
   const actions = Array.isArray(input.actions)
@@ -111,6 +120,7 @@ export function createEmptyMission() {
     loopCount: 1,
     onFailure: 'stop',
     retryLimit: 2,
+    navigation: createNavigationSettings(),
     status: 'pending',
     isDemo: false,
     createdAt: now,
@@ -142,6 +152,7 @@ export function normalizeMission(input = {}) {
     loopCount: Math.max(1, Math.min(99, Math.round(numberOr(input.loopCount, 1)))),
     onFailure: validPolicy ? input.onFailure : 'stop',
     retryLimit: Math.max(1, Math.min(5, Math.round(numberOr(input.retryLimit, 2)))),
+    navigation: createNavigationSettings(input.navigation),
     status: validStatus ? input.status : 'pending',
     isDemo: Boolean(input.isDemo),
     run: createRunState(input.run)
@@ -180,6 +191,19 @@ export function validateMission(mission) {
   }
   if (!Number.isInteger(Number(mission.loopCount)) || mission.loopCount < 1 || mission.loopCount > 99) {
     errors.push('循环次数应为 1～99 的整数。')
+  }
+  const navigation = mission.navigation || {}
+  if (!Number.isFinite(Number(navigation.maxLinearSpeed)) || navigation.maxLinearSpeed < 0.1 || navigation.maxLinearSpeed > 2.0) {
+    errors.push('最大线速度应为 0.1～2.0 m/s。')
+  }
+  if (!Number.isFinite(Number(navigation.maxAngularSpeed)) || navigation.maxAngularSpeed < 0.1 || navigation.maxAngularSpeed > 3.0) {
+    errors.push('最大角速度应为 0.1～3.0 rad/s。')
+  }
+  if (!Number.isFinite(Number(navigation.goalTolerance)) || navigation.goalTolerance < 0.05 || navigation.goalTolerance > 1.0) {
+    errors.push('目标容差应为 0.05～1.0 m。')
+  }
+  if (!Number.isInteger(Number(navigation.navigationTimeoutSeconds)) || navigation.navigationTimeoutSeconds < 5 || navigation.navigationTimeoutSeconds > 600) {
+    errors.push('单点导航超时应为 5～600 秒的整数。')
   }
   return errors
 }

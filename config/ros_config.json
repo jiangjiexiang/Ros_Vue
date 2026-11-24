@@ -1,14 +1,87 @@
 {
     "workspace": "..",
     "maps_dir": "maps",
+    "control": {
+        "max_linear_speed": 0.5,
+        "max_angular_speed": 1,
+        "command_rate_hz": 10,
+        "command_timeout_ms": 600
+    },
     "tasks": {
         "startup": [
             {
                 "id": "foxglove",
                 "description": "Foxglove 数据桥接",
                 "command": "ros2",
-                "args": ["run", "foxglove_bridge", "foxglove_bridge"],
+                "args": [
+                    "run",
+                    "foxglove_bridge",
+                    "foxglove_bridge"
+                ],
                 "delay": 0
+            }
+        ],
+        "simulation_indoor": [
+            {
+                "id": "simulation_indoor",
+                "description": "Isaac Sim 室内巡检场景",
+                "command": "bash",
+                "args": [
+                    "scripts/start_simulation.sh",
+                    "indoor"
+                ],
+                "delay": 0
+            },
+            {
+                "id": "simulation_indoor_ros",
+                "description": "室内场景 ROS 2 双向桥接",
+                "command": "/usr/bin/python3",
+                "args": [
+                    "simulation/ros2_bridge.py"
+                ],
+                "delay": 1000
+            }
+        ],
+        "simulation_warehouse": [
+            {
+                "id": "simulation_warehouse",
+                "description": "Isaac Sim 仓库障碍场景",
+                "command": "bash",
+                "args": [
+                    "scripts/start_simulation.sh",
+                    "warehouse"
+                ],
+                "delay": 0
+            },
+            {
+                "id": "simulation_warehouse_ros",
+                "description": "仓库场景 ROS 2 双向桥接",
+                "command": "/usr/bin/python3",
+                "args": [
+                    "simulation/ros2_bridge.py"
+                ],
+                "delay": 1000
+            }
+        ],
+        "simulation_outdoor": [
+            {
+                "id": "simulation_outdoor",
+                "description": "Isaac Sim 户外坡道场景",
+                "command": "bash",
+                "args": [
+                    "scripts/start_simulation.sh",
+                    "outdoor"
+                ],
+                "delay": 0
+            },
+            {
+                "id": "simulation_outdoor_ros",
+                "description": "户外场景 ROS 2 双向桥接",
+                "command": "/usr/bin/python3",
+                "args": [
+                    "simulation/ros2_bridge.py"
+                ],
+                "delay": 1000
             }
         ],
         "mapping": [],
@@ -16,9 +89,20 @@
     },
     "save_map": {
         "command": "ros2",
-        "args": ["run", "nav2_map_server", "map_saver_cli", "-f"]
+        "args": [
+            "run",
+            "nav2_map_server",
+            "map_saver_cli",
+            "-f"
+        ]
     },
     "topics": {
+        "camera_primary": "/camera1/preview/compressed",
+        "camera_secondary": "/camera2/preview/compressed",
+        "pointcloud": "/points",
+        "registered_cloud": "/cloud_registered",
+        "fastlio_odom": "/Odometry",
+        "fastlio_path": "/path",
         "cmd_vel": "/cmd_vel",
         "battery": "/battery",
         "map": "/map",

@@ -338,6 +338,22 @@ function handleCdrMessage(subId, channel, buffer, offset) {
                 },
                 data: data
             })
+        } else if (channel.schemaName === 'sensor_msgs/msg/CompressedImage' || channel.schemaName === 'sensor_msgs/CompressedImage') {
+            const stampSec = reader.readInt32()
+            const stampNsec = reader.readUint32()
+            const frameId = reader.readString()
+            const format = reader.readString()
+            const dataLength = reader.readUint32()
+            if (dataLength < 0 || reader.pos + dataLength > buffer.byteLength) {
+                throw new Error(`图像数据长度无效: ${dataLength}`)
+            }
+            const data = new Uint8Array(buffer, reader.pos, dataLength)
+            reader.pos += dataLength
+            callback({
+                header: { stamp: { sec: stampSec, nanosec: stampNsec }, frame_id: frameId },
+                format,
+                data
+            })
         } else if (channel.schemaName === 'sensor_msgs/msg/LaserScan' || channel.schemaName === 'sensor_msgs/LaserScan') {
             // Header
             const stampSec = reader.readInt32()

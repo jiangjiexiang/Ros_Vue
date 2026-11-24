@@ -33,25 +33,42 @@
       <UiIcon name="stop" :size="15" />{{ isLoading ? '正在停止…' : '停止导航' }}
     </button>
 
-    <div class="process-status" :class="{ active: isNavigating }">
+    <button
+      v-if="!isNavigating"
+      class="btn btn-secondary nav-btn"
+      :disabled="!connected || isLoading"
+      @click="toggleMultiPointMode"
+    >
+      <UiIcon name="route" :size="15" />{{ multiPointMode ? '退出并清空巡检点' : '编辑巡检点' }}
+    </button>
+
+    <div class="process-status" :class="{ active: isNavigating || multiPointMode }">
       <i></i>
-      <span>{{ !connected ? '等待机器人连接' : isNavigating ? '导航节点运行中' : '导航节点未运行' }}</span>
+      <span>{{ !connected ? '等待机器人连接' : isNavigating ? '导航节点运行中' : multiPointMode ? '巡检点编辑中' : '导航节点未运行' }}</span>
     </div>
 
-    <template v-if="isNavigating">
+    <template v-if="isNavigating || multiPointMode">
       <div class="navigation-modes">
-        <button :class="{ active: isSettingPose }" @click="togglePoseMode">
+        <button v-if="isNavigating" :class="{ active: isSettingPose }" @click="togglePoseMode">
           <UiIcon name="crosshair" :size="16" />初始定位
         </button>
         <button :class="{ active: multiPointMode }" :disabled="isSettingPose" @click="toggleMultiPointMode">
-          <UiIcon name="route" :size="16" />多点导航
+          <UiIcon name="route" :size="16" />{{ multiPointMode && !isNavigating ? '巡检点编辑' : '多点导航' }}
         </button>
       </div>
 
       <div v-if="multiPointMode && !isSettingPose" class="waypoint-row">
-        <span>航点队列 <strong>{{ waypointCount }}</strong></span>
-        <button :disabled="waypointCount === 0" @click="clearWaypoints">清空队列</button>
+        <span>巡检点 <strong>{{ waypointCount }}</strong></span>
+        <button :disabled="waypointCount === 0" @click="clearWaypoints">清空</button>
       </div>
+      <button
+        v-if="multiPointMode && !isNavigating"
+        class="btn btn-connect save-mission-button"
+        :disabled="waypointCount === 0"
+        @click="emit('save-mission')"
+      >
+        <UiIcon name="save" :size="15" />保存为巡检任务并设置参数
+      </button>
 
       <div class="navigation-hint" :class="{ pose: isSettingPose }">
         <UiIcon :name="isSettingPose ? 'crosshair' : 'route'" :size="15" />
@@ -78,7 +95,7 @@ const props = defineProps({
   mapsRevision: { type: Number, default: 0 }
 })
 
-const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'update:selectedMap', 'navigationStarted', 'clear-waypoints'])
+const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'update:selectedMap', 'navigationStarted', 'clear-waypoints', 'save-mission'])
 const isNavigating = ref(props.isNavigating)
 const isLoading = ref(false)
 const errorMsg = ref('')
@@ -90,6 +107,7 @@ let statusTimer = null
 
 const hintText = computed(() => {
   if (isSettingPose.value) return '在地图中按住并拖动，设置机器人位置与朝向。'
+  if (multiPointMode.value && !isNavigating.value) return '双击地图添加巡检点，确认后启动导航依次执行。'
   return multiPointMode.value ? '双击地图连续添加航点，机器人将依次执行。' : '双击地图设置一个导航目标点。'
 })
 
@@ -247,6 +265,7 @@ onUnmounted(() => {
 .waypoint-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; color: var(--text-muted); font-size: 0.67rem; }
 .waypoint-row strong { color: var(--text-primary); font-family: var(--font-mono); }
 .waypoint-row button { border: 0; color: var(--danger); background: transparent; font-size: 0.65rem; cursor: pointer; }
+.save-mission-button { display: flex; width: 100%; align-items: center; justify-content: center; gap: 6px; margin-top: 10px; font-size: 0.66rem; }
 .navigation-hint {
   display: flex;
   align-items: flex-start;

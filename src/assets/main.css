@@ -189,8 +189,15 @@ button:disabled, input:disabled, select:disabled {
 
 .shell-content > .console-body,
 .shell-content > .task-page,
-.shell-content > .robots-page {
+.shell-content > .robots-page,
+.shell-content > .inspection-page,
+.shell-content > .settings-page {
   height: 100%;
+}
+
+.settings-page {
+  padding: 20px;
+  overflow: auto;
 }
 
 .module-pending {

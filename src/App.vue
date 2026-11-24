@@ -5,7 +5,50 @@
     :connection-state="connectionState"
     :status-text="statusText"
   >
-    <main v-if="legacyView === 'monitor'" class="console-body">
+    <section v-if="legacyView === 'inspection'" class="inspection-page">
+      <InspectionWorkspace
+        :robots="robots"
+        :robotConfig="activeRobot"
+        :activeRobotId="activeRobotId"
+        :connectionState="connectionState"
+        :errorMessage="errorMessage"
+        :connected="isConnected"
+        :controlConfig="controlConfig"
+        :mapData="mapData"
+        :scanData="scanData"
+        :tfData="tfData"
+        :planData="planData"
+        :odomData="odomData"
+        :navFeedback="navFeedback"
+        :batteryPercentage="batteryPercentage"
+        :batteryVoltage="batteryVoltage"
+        :mapLayers="mapLayers"
+        :layerOptions="layerOptions"
+        :cameraPrimary="cameraPrimary"
+        :cameraPrimaryTopic="robotTopics.camera_primary"
+        :mapsRevision="mapsRevision"
+        :waypoints="waypointQueue"
+        :activeWaypoint="activeWaypoint"
+        :waypointCount="waypointQueue.length + (activeWaypoint ? 1 : 0)"
+        v-model:isMapping="mappingActive"
+        v-model:isNavigating="navigationActive"
+        v-model:isSettingPose="isSettingPose"
+        v-model:selectedMap="selectedScenePath"
+        v-model:multiPointMode="multiPointMode"
+        @connect="connectRobot"
+        @velocity-change="onVelocityChange"
+        @stop-motion="onStopMotion"
+        @goal-set="onGoalSet"
+        @waypoint-add="onWaypointAdd"
+        @waypoint-reached="onWaypointReached"
+        @initial-pose-set="onInitialPoseSet"
+        @clear-waypoints="clearWaypoints"
+        @save-mission="saveWorkspaceMission"
+        @mapping-started="onMappingStarted"
+      />
+    </section>
+
+    <main v-else-if="legacyView === 'monitor'" class="console-body">
       <aside class="left-panel panel-scroll">
         <ConnectionPanel
           :robots="robots"
@@ -17,6 +60,9 @@
 
         <JoystickControl
           :connected="isConnected"
+          :maxLinearSpeed="controlConfig.max_linear_speed"
+          :maxAngularSpeed="controlConfig.max_angular_speed"
+          :commandRateHz="controlConfig.command_rate_hz"
           @velocity-change="onVelocityChange"
           @stop="onStopMotion"
         />
@@ -129,9 +175,17 @@
           <UiIcon name="layers" :size="19" />
           <span><strong>地图与场景</strong><small>编辑栅格、切换和管理场景</small></span>
         </button>
+        <button :class="{ active: activeOperation === 'simulation' }" @click="activeOperation = 'simulation'">
+          <UiIcon name="robot" :size="19" />
+          <span><strong>仿真测试</strong><small>启动三个 GPU 物理仿真场景</small></span>
+        </button>
       </nav>
 
-      <div v-if="activeOperation !== 'maps'" class="task-layout">
+      <section v-if="activeOperation === 'simulation'" class="card task-map-manager">
+        <SimulationControl :controlConfig="controlConfig" />
+      </section>
+
+      <div v-else-if="activeOperation !== 'maps'" class="task-layout">
         <section class="card task-control-panel">
           <div class="operations-heading">
             <h2>{{ activeOperation === 'mapping' ? '建图任务' : '导航任务' }}</h2>
@@ -181,7 +235,9 @@
         />
       </div>
 
-      <MapsPage v-else @changed="mapsRevision++" @select="selectScene" />
+      <section v-else class="card task-map-manager">
+        <MapManager @changed="mapsRevision++" @select="selectScene" />
+      </section>
     </main>
 
     <main v-else-if="legacyView === 'robots'" class="robots-page">
@@ -196,6 +252,10 @@
       />
     </main>
 
+    <main v-else-if="legacyView === 'settings'" class="settings-page">
+      <RuntimeSettings @saved="loadRuntimeConfig" />
+    </main>
+
     <RouterView v-else />
   </AppShell>
 </template>
@@ -204,17 +264,20 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppShell from './layout/AppShell.vue'
-import { useFoxglove } from './composables/useFoxglove.js'
+import { useRosTransport } from './composables/useRosTransport.js'
 import { API_BASE, DEFAULT_WS_URL } from './config.js'
 import JoystickControl from './components/JoystickControl.vue'
 import BatteryStatus from './components/BatteryStatus.vue'
 import SlamMap from './components/SlamMap.vue'
 import ConnectionPanel from './components/ConnectionPanel.vue'
 import TelemetryPanel from './components/TelemetryPanel.vue'
+import InspectionWorkspace from './components/InspectionWorkspace.vue'
 import MappingControl from './components/MappingControl.vue'
 import NavigationControl from './components/NavigationControl.vue'
-import MapsPage from './features/maps/MapsPage.vue'
+import SimulationControl from './components/SimulationControl.vue'
+import MapManager from './components/MapManager.vue'
 import RobotManager from './components/RobotManager.vue'
+import RuntimeSettings from './components/RuntimeSettings.vue'
 import UiIcon from './components/UiIcon.vue'
 
 function loadRobots() {
@@ -222,7 +285,10 @@ function loadRobots() {
     const saved = JSON.parse(localStorage.getItem('robot-console-robots'))
     if (Array.isArray(saved) && saved.length && saved.every((robot) => robot.id && robot.name && robot.url)) return saved
   } catch {}
-  return [{ id: 'robot-1', name: '机器狗 1', url: DEFAULT_WS_URL, namespace: '' }]
+  return [{
+    id: 'robot-1', name: '机器狗 1', url: DEFAULT_WS_URL, namespace: '', transport: 'foxglove',
+    lidarType: '2d', slamAlgorithm: 'slam_toolbox', localizationAlgorithm: 'amcl', algorithmPackage: '', algorithmLaunch: ''
+  }]
 }
 
 const route = useRoute()
@@ -231,7 +297,7 @@ const legacyView = computed(() => route.meta.legacyView || '')
 const robots = ref(loadRobots())
 const activeRobotId = ref(robots.value[0].id)
 const activeRobot = computed(() => robots.value.find((robot) => robot.id === activeRobotId.value) || robots.value[0])
-const foxglove = useFoxglove()
+const foxglove = useRosTransport()
 const slamMapRef = ref(null)
 const activeOperation = ref('maps')
 const mapsRevision = ref(0)
@@ -244,6 +310,13 @@ const layerOptions = [
   { key: 'goal', label: '目标' }
 ]
 
+const CONTROL_DEFAULTS = {
+  max_linear_speed: 0.5,
+  max_angular_speed: 1.0,
+  command_rate_hz: 10,
+  command_timeout_ms: 600
+}
+
 const TOPIC_DEFAULTS = {
   cmd_vel: '/cmd_vel',
   battery: '/battery',
@@ -255,7 +328,13 @@ const TOPIC_DEFAULTS = {
   goal_pose: '/goal_pose',
   initial_pose: '/initialpose',
   navigate_feedback: '/navigate_to_pose/_action/feedback',
-  imu: '/imu'
+  imu: '/imu',
+  camera_primary: '/camera1/preview/compressed',
+  camera_secondary: '/camera2/preview/compressed',
+  pointcloud: '/points',
+  registered_cloud: '/cloud_registered',
+  fastlio_odom: '/Odometry',
+  fastlio_path: '/path'
 }
 
 // ---- 建图状态 (跨组件共享) ----
@@ -279,14 +358,20 @@ const scanData = ref(null)
 const tfData = ref(null)
 const odomData = ref(null)
 const planData = ref(null)
+const cameraPrimary = ref(null)
 
 // 导航反馈数据
 const navFeedback = ref(null)
 const imuData = ref(null)
 const runtimeTopics = ref({ ...TOPIC_DEFAULTS })
+const controlConfig = ref({ ...CONTROL_DEFAULTS })
 const robotTopics = computed(() => {
   const namespace = activeRobot.value?.namespace?.replace(/^\/+|\/+$/g, '')
-  return Object.fromEntries(Object.entries(runtimeTopics.value).map(([key, topic]) => {
+  const topics = { ...runtimeTopics.value }
+  const usesFastLio = ['fast_lio', 'fast_lio_localization'].includes(activeRobot.value?.slamAlgorithm) ||
+    activeRobot.value?.localizationAlgorithm === 'fast_lio_localization'
+  if (usesFastLio && topics.odom === TOPIC_DEFAULTS.odom) topics.odom = topics.fastlio_odom || '/Odometry'
+  return Object.fromEntries(Object.entries(topics).map(([key, topic]) => {
     if (!namespace || !topic) return [key, topic]
     return [key, `/${namespace}/${topic.replace(/^\/+/, '')}`]
   }))
@@ -301,7 +386,7 @@ const mapLayers = ref({
   goal: true
 })
 
-// ================= Foxglove 频道 ID ==================
+// ================= ROS 通信频道 ID ==================
 let cmdVelChannelId = null
 let goalPoseChannelId = null
 let initialPoseChannelId = null
@@ -315,6 +400,7 @@ let odomSubId = null
 let planSubId = null
 let feedbackSubId = null // 导航反馈订阅 ID
 let imuSubId = null
+let cameraPrimarySubId = null
 
 // ---- 计算属性 ----
 const connectionState = computed(() => foxglove.connectionState.value)
@@ -358,7 +444,7 @@ function handleConnect(url) {
     activeRobot.value.url = targetUrl
     persistRobots()
   }
-  foxglove.connect(targetUrl)
+  foxglove.connect(targetUrl, activeRobot.value?.transport || 'foxglove')
 }
 
 function persistRobots() {
@@ -367,13 +453,13 @@ function persistRobots() {
 
 function switchRobot(robot) {
   if (robot.id === activeRobotId.value) {
-    router.push('/monitor')
+    router.push('/inspection')
     return
   }
   handleDisconnect()
   activeRobotId.value = robot.id
   persistRobots()
-  router.push('/monitor')
+  router.push('/inspection')
   nextTick(() => handleConnect(robot.url))
 }
 
@@ -390,7 +476,17 @@ function addRobot(config) {
 function updateRobot(config) {
   const robot = robots.value.find((item) => item.id === config.id)
   if (!robot) return
-  Object.assign(robot, { name: config.name, url: config.url, namespace: config.namespace })
+  Object.assign(robot, {
+    name: config.name,
+    url: config.url,
+    namespace: config.namespace,
+    transport: config.transport || 'foxglove',
+    lidarType: config.lidarType || '2d',
+    slamAlgorithm: config.slamAlgorithm || 'slam_toolbox',
+    localizationAlgorithm: config.localizationAlgorithm || 'amcl',
+    algorithmPackage: config.algorithmPackage || '',
+    algorithmLaunch: config.algorithmLaunch || ''
+  })
   persistRobots()
   if (robot.id === activeRobotId.value && isConnected.value) {
     handleDisconnect()
@@ -430,6 +526,7 @@ function clearAllData() {
   tfData.value = null
   odomData.value = null
   planData.value = null
+  cameraPrimary.value = null
   navFeedback.value = null // 清除导航反馈数据
   imuData.value = null
   waypointQueue.value = []
@@ -449,6 +546,7 @@ function clearConnectionState() {
   planSubId = null
   feedbackSubId = null
   imuSubId = null
+  cameraPrimarySubId = null
   clearAllData()
 }
 
@@ -463,9 +561,11 @@ async function loadRuntimeConfig() {
     const res = await fetch(`${API_BASE}/runtime_config`)
     const data = await res.json()
     runtimeTopics.value = { ...TOPIC_DEFAULTS, ...(data.topics || {}) }
+    controlConfig.value = { ...CONTROL_DEFAULTS, ...(data.control || {}) }
   } catch (err) {
-    console.warn('加载运行时配置失败，使用默认话题:', err)
+    console.warn('加载运行时配置失败，使用默认话题和运动控制参数:', err)
     runtimeTopics.value = { ...TOPIC_DEFAULTS }
+    controlConfig.value = { ...CONTROL_DEFAULTS }
   }
 }
 
@@ -560,6 +660,12 @@ function onChannelsReady(event) {
       imuData.value = data
     })
   }
+
+  if (!cameraPrimarySubId) {
+    cameraPrimarySubId = foxglove.subscribe(robotTopics.value.camera_primary, (data) => {
+      cameraPrimary.value = data
+    })
+  }
 }
 
 function normalizeNavFeedback(data) {
@@ -623,7 +729,7 @@ function sendGoalPose(x, y) {
 }
 
 function dispatchNextWaypoint() {
-  if (!multiPointMode.value) return
+  if (!multiPointMode.value || !navigationActive.value) return
   if (waypointQueue.value.length === 0) {
     activeWaypoint.value = null
     return
@@ -646,7 +752,7 @@ function advanceWaypoint() {
 function onWaypointAdd({ x, y }) {
   if (!multiPointMode.value) return
   waypointQueue.value.push({ x, y })
-  if (!activeWaypoint.value) {
+  if (navigationActive.value && !activeWaypoint.value) {
     dispatchNextWaypoint()
   }
 }
@@ -655,6 +761,27 @@ function clearWaypoints() {
   waypointQueue.value = []
   activeWaypoint.value = null
   waypointAdvancing.value = false
+}
+
+function saveWorkspaceMission() {
+  const points = [...(activeWaypoint.value ? [activeWaypoint.value] : []), ...waypointQueue.value]
+  if (!points.length) return
+  const mapPath = selectedScenePath.value
+  const mapName = mapPath ? mapPath.split('/').pop().replace(/\.ya?ml$/i, '') : ''
+  const draft = {
+    name: mapName ? `${mapName}巡检任务` : '新建巡检任务',
+    robotId: activeRobot.value?.id || '',
+    robotName: activeRobot.value?.name || '',
+    map: { id: mapPath, name: mapName, path: mapPath, source: mapPath ? 'api' : '', isDemo: false },
+    waypoints: points.map((point, index) => ({
+      name: `巡检点 ${index + 1}`,
+      pose: { x: point.x, y: point.y, yaw: 0 },
+      actions: ['photo'],
+      dwellSeconds: 8
+    }))
+  }
+  localStorage.setItem('robot-console-inspection-draft-v1', JSON.stringify(draft))
+  router.push('/missions/new')
 }
 
 function onWaypointReached() {
@@ -687,6 +814,7 @@ watch(() => route.path, (current, previous) => {
 watch(navigationActive, (running) => {
   if (running) {
     slamMapRef.value?.resetView()
+    if (multiPointMode.value && !activeWaypoint.value) dispatchNextWaypoint()
   } else {
     clearWaypoints()
   }
@@ -723,20 +851,16 @@ function onStopMotion() {
   }
 }
 
-// 线速度上限与角速度上限 (可根据情况修改)
-const MAX_LINEAR_VEL = 0.5
-const MAX_ANGULAR_VEL = 1.0
-
 function updateKeyboardControl() {
   if (!cmdVelChannelId || !isConnected.value) return
 
   let linearX = 0
   let angularZ = 0
 
-  if (keyboardState.w) linearX += MAX_LINEAR_VEL
-  if (keyboardState.s) linearX -= MAX_LINEAR_VEL
-  if (keyboardState.a) angularZ += MAX_ANGULAR_VEL
-  if (keyboardState.d) angularZ -= MAX_ANGULAR_VEL
+  if (keyboardState.w) linearX += controlConfig.value.max_linear_speed
+  if (keyboardState.s) linearX -= controlConfig.value.max_linear_speed
+  if (keyboardState.a) angularZ += controlConfig.value.max_angular_speed
+  if (keyboardState.d) angularZ -= controlConfig.value.max_angular_speed
 
   foxglove.sendTwist(cmdVelChannelId, linearX, angularZ)
 }
@@ -750,10 +874,10 @@ function handleKeyDown(e) {
     if (!keyboardState[key]) {
       keyboardState[key] = true
       
-      // 按第一下键时，开启 20Hz 的控制循环
+      // 按第一下键时，按运行时配置开启控制循环
       if (!keyboardInterval) {
         updateKeyboardControl() // 立即发一次
-        keyboardInterval = setInterval(updateKeyboardControl, 50)
+        keyboardInterval = setInterval(updateKeyboardControl, 1000 / controlConfig.value.command_rate_hz)
       }
     }
   }

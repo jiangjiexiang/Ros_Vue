@@ -2,12 +2,12 @@
   <section class="card">
     <div class="card-header">
       <span><UiIcon name="move" :size="17" />运动控制</span>
-      <small>10 HZ</small>
+      <small>{{ commandRateHz }} HZ</small>
     </div>
     <div class="card-body joystick-container">
       <div class="joystick-status">
         <span><i :class="{ active: connected }"></i>{{ connected ? '控制已启用' : '等待连接' }}</span>
-        <span>MAX 0.5 m/s</span>
+        <span>MAX {{ maxLinearSpeed }} m/s · {{ maxAngularSpeed }} rad/s</span>
       </div>
 
       <div class="joystick-canvas-wrapper" :class="{ disabled: !connected }">
@@ -42,14 +42,16 @@
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import UiIcon from './UiIcon.vue'
 
-const props = defineProps({ connected: Boolean })
+const props = defineProps({
+  connected: Boolean,
+  maxLinearSpeed: { type: Number, default: 0.5 },
+  maxAngularSpeed: { type: Number, default: 1.0 },
+  commandRateHz: { type: Number, default: 10 }
+})
 const emit = defineEmits(['velocity-change', 'stop'])
 const canvasSize = 220
 const baseRadius = 90
 const knobRadius = 28
-const maxLinearSpeed = 0.5
-const maxAngularSpeed = 1.0
-const sendRate = 100
 const canvasRef = ref(null)
 const knobX = ref(0)
 const knobY = ref(0)
@@ -57,8 +59,9 @@ let isDragging = false
 let animationId = null
 let sendTimer = null
 
-const linearDisplay = computed(() => (knobY.value * -maxLinearSpeed).toFixed(2))
-const angularDisplay = computed(() => (knobX.value * -maxAngularSpeed).toFixed(2))
+const linearDisplay = computed(() => (knobY.value * -props.maxLinearSpeed).toFixed(2))
+const commandInterval = computed(() => 1000 / props.commandRateHz)
+const angularDisplay = computed(() => (knobX.value * -props.maxAngularSpeed).toFixed(2))
 
 function draw() {
   const canvas = canvasRef.value
@@ -218,16 +221,21 @@ function startSendLoop() {
   if (sendTimer) return
   sendTimer = setInterval(() => {
     emit('velocity-change', {
-      linearX: knobY.value * -maxLinearSpeed,
-      angularZ: knobX.value * -maxAngularSpeed
+      linearX: knobY.value * -props.maxLinearSpeed,
+      angularZ: knobX.value * -props.maxAngularSpeed
     })
-  }, sendRate)
+  }, commandInterval.value)
 }
 
 function stopSendLoop() {
   if (sendTimer) clearInterval(sendTimer)
   sendTimer = null
 }
+
+watch(() => props.commandRateHz, () => {
+  stopSendLoop()
+  if (props.connected) startSendLoop()
+})
 
 watch(() => props.connected, (connected) => {
   if (connected) {
