@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eo pipefail
 
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v node >/dev/null 2>&1; then
     echo "请先安装 Node.js 18 或更高版本。"
@@ -12,7 +12,7 @@ if [[ ! -d node_modules ]]; then
     npm ci --no-audit --no-fund
 fi
 
-node server.js &
+node server/index.js &
 BACKEND_PID=$!
 FRONTEND_PID=""
 

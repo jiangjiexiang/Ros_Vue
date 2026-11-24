@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = path.resolve(__dirname, '..');
 const app = express();
 const activeProcesses = new Map();
 
@@ -14,7 +15,7 @@ app.use(express.json({ limit: '50mb' }));
 
 function loadConfig() {
     try {
-        const configPath = process.env.ROS_CONFIG_FILE || path.join(__dirname, 'ros_config.json');
+        const configPath = process.env.ROS_CONFIG_FILE || path.join(projectRoot, 'config/ros_config.json');
         return JSON.parse(fs.readFileSync(configPath, 'utf8'));
     } catch (err) {
         console.error('无法读取 ROS 配置:', err.message);
@@ -23,7 +24,7 @@ function loadConfig() {
 }
 
 function resolveFromProject(directory = '.') {
-    return path.isAbsolute(directory) ? directory : path.resolve(__dirname, directory);
+    return path.isAbsolute(directory) ? directory : path.resolve(projectRoot, directory);
 }
 
 function mapsDir(config) {
@@ -419,7 +420,7 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-const dist = path.join(__dirname, 'dist');
+const dist = path.join(projectRoot, 'dist');
 if (fs.existsSync(dist)) app.use(express.static(dist));
 
 app.listen(3000, '0.0.0.0', () => {

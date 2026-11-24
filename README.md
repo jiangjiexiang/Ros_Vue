@@ -17,7 +17,7 @@ docker exec -it ros2-humble-dev bash
 ```bash
 cd /root/ros2_ws/RobotConsole
 npm ci
-bash start_console.sh
+bash scripts/start_console.sh
 ```
 
 打开 http://localhost:5173 。修改 Vue 文件后页面会自动刷新。
@@ -28,14 +28,14 @@ bash start_console.sh
 
 ```bash
 npm ci
-bash start_console.sh
+bash scripts/start_console.sh
 ```
 
 脚本会启动前端、后端和 Foxglove。
 
 ## 配置
 
-通常只需要修改 `ros_config.json`：
+通常只需要修改 `config/ros_config.json`：
 
 ```json
 {
@@ -73,20 +73,22 @@ src/App.vue                 页面布局
 src/assets/main.css         全局样式
 src/components/             页面组件
 src/composables/useFoxglove.js  ROS 数据通信
-server.js                   后端与 ROS 任务管理
-ros_config.json             ROS 配置
+server/index.js             后端与 ROS 任务管理
+config/ros_config.json      ROS 配置
+scripts/start_console.sh    启动脚本
+scripts/test_sub.py         ROS 订阅测试脚本
 ```
 
 检查代码：
 
 ```bash
 npm run build
-node --check server.js
+node --check server/index.js
 ```
 
 ## 建图和导航
 
-本项目不包含具体机器人的建图或导航实现，默认 `mapping` 和 `navigation` 任务为空。根据自己的机器人修改 `ros_config.json`，例如：
+本项目不包含具体机器人的建图或导航实现，默认 `mapping` 和 `navigation` 任务为空。根据自己的机器人修改 `config/ros_config.json`，例如：
 
 ```json
 {
@@ -100,7 +102,7 @@ node --check server.js
 测试不同机器人或仿真器时，可通过 `ROS_CONFIG_FILE` 指向项目外的配置文件，不需要修改仓库默认配置：
 
 ```bash
-ROS_CONFIG_FILE=/path/to/test_config.json bash start_console.sh
+ROS_CONFIG_FILE=/path/to/test_config.json bash scripts/start_console.sh
 ```
 
 网页和 Foxglove 可以独立运行；实际建图、保存地图和导航需要你的 ROS 环境提供对应功能包。
