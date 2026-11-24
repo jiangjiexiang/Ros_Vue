@@ -28,6 +28,7 @@
           <button class="switch-button" :disabled="robot.id === activeRobotId && connectionState === 'connecting'" @click="$emit('switch', robot)">
             {{ robot.id === activeRobotId ? '查看控制台' : '切换并连接' }}
           </button>
+          <button class="edit-button" @click="editRobot(robot)">编辑</button>
           <button class="delete-button" :disabled="robots.length <= 1" @click="remove(robot)">删除</button>
         </div>
       </article>
@@ -35,7 +36,7 @@
 
     <section class="add-robot-card">
       <div>
-        <h2>添加机器人</h2>
+        <h2>{{ editingId ? '编辑机器人' : '添加机器人' }}</h2>
         <p>不同机器人可以通过局域网 IP 或主机名连接，也可以使用命名空间区分话题。</p>
       </div>
       <form @submit.prevent="add">
@@ -43,7 +44,10 @@
         <label>局域网 IP / 主机名<input v-model.trim="form.host" required placeholder="192.168.1.20"></label>
         <label>端口<input v-model.trim="form.port" type="number" min="1" max="65535" required></label>
         <label>命名空间<input v-model.trim="form.namespace" placeholder="可选，例如 robot2"></label>
-        <button type="submit">添加并连接</button>
+        <div class="form-actions">
+          <button type="submit">{{ editingId ? '保存修改' : '添加并连接' }}</button>
+          <button v-if="editingId" type="button" @click="resetForm">取消</button>
+        </div>
       </form>
       <p v-if="errorMsg" class="error-message">{{ errorMsg }}</p>
     </section>
@@ -61,7 +65,8 @@ const props = defineProps({
   activeRobotId: { type: String, required: true },
   connectionState: { type: String, default: 'disconnected' }
 })
-const emit = defineEmits(['add', 'remove', 'switch'])
+const emit = defineEmits(['add', 'update', 'remove', 'switch'])
+const editingId = ref('')
 const form = reactive({ name: '', host: '', port: '8765', namespace: '' })
 const errorMsg = ref('')
 const stateText = computed(() => ({
@@ -76,15 +81,35 @@ function add() {
     return
   }
   const host = form.host.includes(':') && !form.host.startsWith('[') ? `[${form.host}]` : form.host
-  emit('add', {
+  const config = {
     name: form.name.trim(),
     url: `ws://${host}:${portNumber}`,
     namespace: form.namespace.trim().replace(/^\/+|\/+$/g, '')
-  })
+  }
+  if (editingId.value) emit('update', { ...config, id: editingId.value })
+  else emit('add', config)
+  resetForm()
+}
+
+function resetForm() {
+  editingId.value = ''
   form.name = ''
   form.host = ''
   form.port = '8765'
   form.namespace = ''
+}
+
+function editRobot(robot) {
+  try {
+    const url = new URL(robot.url)
+    editingId.value = robot.id
+    form.name = robot.name
+    form.host = url.hostname.replace(/^\[|\]$/g, '')
+    form.port = url.port || '8765'
+    form.namespace = robot.namespace || ''
+  } catch {
+    errorMsg.value = '该机器人的连接地址无效'
+  }
 }
 
 function displayAddress(value) {
@@ -97,7 +122,9 @@ function displayAddress(value) {
 }
 
 function remove(robot) {
-  if (window.confirm(`确定删除机器人“${robot.name}”的配置吗？`)) emit('remove', robot.id)
+  if (!window.confirm(`确定删除机器人“${robot.name}”的配置吗？`)) return
+  if (editingId.value === robot.id) resetForm()
+  emit('remove', robot.id)
 }
 </script>
 
@@ -128,6 +155,7 @@ dd { overflow: hidden; color: var(--text-secondary); font-family: var(--font-mon
 .add-robot-card h2 { font-size: 0.9rem; }
 .add-robot-card p { margin-top: 6px; color: var(--text-muted); font-size: 0.7rem; }
 .add-robot-card form { display: grid; grid-template-columns: 1fr 1.4fr 80px 1fr auto; gap: 10px; align-items: end; margin-top: 16px; }
+.form-actions { display: flex; gap: 6px; }
 .add-robot-card label { color: var(--text-muted); font-size: 0.65rem; }
 .add-robot-card input { display: block; width: 100%; height: 35px; margin-top: 6px; padding: 0 9px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-primary); background: var(--bg-secondary); font-size: 0.7rem; }
 .add-robot-card .error-message { margin-top: 12px; }

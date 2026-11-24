@@ -45,10 +45,11 @@
     <main v-if="activeView === 'dashboard'" class="console-body">
       <aside class="left-panel panel-scroll">
         <ConnectionPanel
+          :robots="robots"
+          :activeRobotId="activeRobotId"
           :connectionState="connectionState"
           :errorMessage="errorMessage"
-          :defaultUrl="activeRobot.url"
-          @connect="handleConnect"
+          @connect="connectRobot"
           @disconnect="handleDisconnect"
         />
 
@@ -229,6 +230,7 @@
         :activeRobotId="activeRobotId"
         :connectionState="connectionState"
         @add="addRobot"
+        @update="updateRobot"
         @remove="removeRobot"
         @switch="switchRobot"
       />
@@ -378,6 +380,11 @@ const statusText = computed(() => {
 })
 
 // ---- 事件处理 ----
+function connectRobot(robot) {
+  if (robot.id !== activeRobotId.value) switchRobot(robot)
+  else handleConnect(robot.url)
+}
+
 function handleConnect(url) {
   if (connectionState.value === 'connected' || connectionState.value === 'connecting') return
   const targetUrl = url || activeRobot.value?.url || DEFAULT_WS_URL
@@ -412,6 +419,17 @@ function addRobot(config) {
   robots.value.push(robot)
   persistRobots()
   switchRobot(robot)
+}
+
+function updateRobot(config) {
+  const robot = robots.value.find((item) => item.id === config.id)
+  if (!robot) return
+  Object.assign(robot, { name: config.name, url: config.url, namespace: config.namespace })
+  persistRobots()
+  if (robot.id === activeRobotId.value && isConnected.value) {
+    handleDisconnect()
+    nextTick(() => handleConnect(robot.url))
+  }
 }
 
 function removeRobot(id) {

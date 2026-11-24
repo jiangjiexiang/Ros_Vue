@@ -6,7 +6,7 @@
           <UiIcon name="link" :size="18" />
           <div>
             <h2>机器人连接</h2>
-            <p>局域网 · Foxglove WebSocket</p>
+            <p>选择已配置机器人</p>
           </div>
         </div>
         <span class="connection-badge" :class="connectionState">
@@ -14,39 +14,22 @@
         </span>
       </div>
 
-      <div class="endpoint-fields">
-        <label class="host-field">
-          <span class="field-label">机器人 IP / 主机名</span>
-          <input
-            v-model.trim="host"
-            class="url-input"
-            type="text"
-            placeholder="192.168.1.100"
-            spellcheck="false"
-            :disabled="locked"
-            @keydown.enter="connect"
-          >
-        </label>
-        <label class="port-field">
-          <span class="field-label">端口</span>
-          <input
-            v-model.trim="port"
-            class="url-input"
-            type="number"
-            min="1"
-            max="65535"
-            :disabled="locked"
-            @keydown.enter="connect"
-          >
-        </label>
-      </div>
+      <label>
+        <span class="field-label">控制对象</span>
+        <select v-model="selectedRobotId" class="robot-select" :disabled="locked">
+          <option v-for="robot in robots" :key="robot.id" :value="robot.id">{{ robot.name }}</option>
+        </select>
+      </label>
 
-      <div class="generated-url">{{ displayUrl }}</div>
+      <div v-if="selectedRobot" class="selected-details">
+        <span>{{ displayAddress(selectedRobot.url) }}</span>
+        <span>{{ selectedRobot.namespace ? `命名空间 ${selectedRobot.namespace}` : '无命名空间' }}</span>
+      </div>
 
       <button
         v-if="!isConnected"
         class="btn btn-connect"
-        :disabled="locked || !host"
+        :disabled="locked || !selectedRobot"
         @click="connect"
       >
         <UiIcon name="link" :size="16" />
@@ -56,7 +39,7 @@
         <UiIcon name="link" :size="16" />断开连接
       </button>
 
-      <div v-if="localError || errorMessage" class="error-message">{{ localError || errorMessage }}</div>
+      <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
     </div>
   </section>
 </template>
@@ -66,58 +49,38 @@ import { computed, ref, watch } from 'vue'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
+  robots: { type: Array, required: true },
+  activeRobotId: { type: String, required: true },
   connectionState: String,
-  errorMessage: String,
-  defaultUrl: { type: String, required: true }
+  errorMessage: String
 })
 const emit = defineEmits(['connect', 'disconnect'])
-const protocol = ref('ws')
-const host = ref('')
-const port = ref('8765')
-const localError = ref('')
+const selectedRobotId = ref(props.activeRobotId)
 const isConnected = computed(() => props.connectionState === 'connected')
 const locked = computed(() => isConnected.value || props.connectionState === 'connecting')
+const selectedRobot = computed(() => props.robots.find((robot) => robot.id === selectedRobotId.value))
 const statusLabel = computed(() => ({
   connected: '在线', connecting: '连接中', error: '连接异常'
 }[props.connectionState] || '未连接'))
-const displayUrl = computed(() => {
-  const value = host.value.includes(':') && !host.value.startsWith('[') ? `[${host.value}]` : host.value
-  return `${protocol.value}://${value || '机器人IP'}:${port.value || '8765'}`
-})
 
-function applyUrl(value) {
+watch(() => props.activeRobotId, (value) => { selectedRobotId.value = value }, { immediate: true })
+
+function displayAddress(value) {
   try {
     const url = new URL(value)
-    protocol.value = url.protocol.replace(':', '') || 'ws'
-    host.value = url.hostname.replace(/^\[|\]$/g, '')
-    port.value = url.port || '8765'
+    return `${url.hostname}:${url.port || '8765'}`
   } catch {
-    host.value = value
+    return value
   }
 }
 
-watch(() => props.defaultUrl, (value) => {
-  if (!isConnected.value) applyUrl(value)
-}, { immediate: true })
-
 function connect() {
-  localError.value = ''
-  const portNumber = Number(port.value)
-  if (!host.value.trim()) {
-    localError.value = '请输入机器人 IP 或主机名'
-    return
-  }
-  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
-    localError.value = '端口应为 1–65535 之间的数字'
-    return
-  }
-  emit('connect', displayUrl.value)
+  if (selectedRobot.value) emit('connect', selectedRobot.value)
 }
 </script>
 
 <style scoped>
-.endpoint-fields { display: grid; grid-template-columns: minmax(0, 1fr) 74px; gap: 8px; }
-.endpoint-fields label { min-width: 0; }
-.port-field input { padding: 0 7px; }
-.generated-url { overflow: hidden; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.62rem; text-overflow: ellipsis; white-space: nowrap; }
+.robot-select { width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); background: rgba(2, 8, 18, 0.42); font-size: 0.72rem; cursor: pointer; }
+.robot-select option { background: var(--bg-elevated); }
+.selected-details { display: flex; flex-direction: column; gap: 5px; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.62rem; }
 </style>
