@@ -94,7 +94,7 @@
                 <label>
                   <span>通信方式</span>
                   <select v-model="form.transport" @change="changeTransport">
-                    <option value="doglink">DogLink 自研协议（8768 · 低延迟二进制）</option>
+                    <option value="doglink">DogLink 自研协议（低延迟二进制）</option>
                     <option value="foxglove">Foxglove（8765）</option>
                     <option value="rosbridge">ROS Bridge（9090）</option>
                   </select>
@@ -125,8 +125,8 @@
                   <label>
                     <span>雷达类型</span>
                     <select v-model="form.lidarType" @change="changeLidarType">
-                      <option value="2d">2D 激光雷达</option>
                       <option value="3d">3D 激光雷达</option>
+                      <option value="2d">2D 激光雷达</option>
                     </select>
                   </label>
                   <label>
@@ -231,7 +231,7 @@ function getLocalizationOptions(lidarType, slamAlgorithm) {
 }
 
 function normalizeAlgorithmConfig(robot = {}) {
-  const lidarType = robot.lidarType === '3d' ? '3d' : '2d'
+  const lidarType = robot.lidarType === '2d' ? '2d' : '3d'
   const defaultSlam = lidarType === '3d' ? 'fast_lio' : 'slam_toolbox'
   const slamAlgorithm = SLAM_ALGORITHMS[lidarType].some((option) => option.value === robot.slamAlgorithm)
     ? robot.slamAlgorithm

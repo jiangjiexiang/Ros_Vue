@@ -20,7 +20,6 @@ export const FAILURE_POLICIES = [
 ]
 
 export const ACTIVE_MISSION_STATUSES = ['running', 'paused']
-export const DEMO_NAVIGATION_SECONDS = 3
 
 export function cloneData(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value))

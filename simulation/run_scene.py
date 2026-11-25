@@ -128,7 +128,6 @@ CAMERA_HEIGHT = 360
 CAMERA_UPDATE_PERIOD = 1.0 / 30.0
 CAMERA_FRAME_IDS = {
     "primary": "camera_primary_optical_frame",
-    "secondary": "camera_secondary_optical_frame",
 }
 
 
@@ -139,7 +138,10 @@ class ControlState:
         self.linear_x = 0.0
         self.angular_z = 0.0
         self.command_time = 0.0
-        self.gait_phase = 0.0
+        self.applied_linear_x = 0.0
+        self.applied_angular_z = 0.0
+        self.policy_action = None
+        self.policy_step = 0
         self.telemetry = {"ready": False}
         self.camera_frames = {}
         self.pointcloud_data = None
@@ -181,7 +183,11 @@ class ControlState:
 
     def update_pointcloud(self, points):
         with self.lock:
-            self.pointcloud_data = {"frame_id": POINTCLOUD_METADATA["frame_id"], "points": points}
+            self.pointcloud_data = {
+                "frame_id": POINTCLOUD_METADATA["frame_id"],
+                "scan_period": POINTCLOUD_UPDATE_PERIOD,
+                "points": points,
+            }
 
     def pointcloud(self):
         with self.lock:
@@ -394,6 +400,9 @@ def design_scene(scene_name):
 
     robot_cfg = UNITREE_GO2_CFG.replace(prim_path="/World/Go2")
     robot_cfg.init_state.pos = SCENES[scene_name]["spawn"]
+    robot_cfg.actuators["base_legs"].stiffness = 25.0
+    robot_cfg.actuators["base_legs"].damping = 0.5
+    robot_cfg.init_state.joint_pos["R[L,R]_thigh_joint"] = 1.0
     return Articulation(robot_cfg)
 
 
@@ -416,45 +425,61 @@ def roll_pitch_from_quaternion(quaternion):
     return roll, pitch
 
 
-def apply_control(robot, control_state, dt, height_assist):
-    linear_x, angular_z = control_state.command()
-    activity = max(
-        abs(linear_x) / CONTROL_CONFIG["max_linear_speed"],
-        abs(angular_z) / CONTROL_CONFIG["max_angular_speed"],
-    )
-    joint_target = robot.data.default_joint_pos.clone()
+def load_locomotion_policy(device):
+    policy_path = Path(__file__).resolve().parent / "policies" / "go2_velocity_flat.pt"
+    policy = torch.jit.load(str(policy_path), map_location=device)
+    policy.eval()
+    print(f"[POLICY_READY] Go2 关节运动策略: {policy_path}", flush=True)
+    return policy
 
-    if activity > 0.01:
-        control_state.gait_phase = (control_state.gait_phase + dt * 10.0) % (2.0 * math.pi)
-        direction = 1.0 if linear_x >= 0.0 else -1.0
-        for index, name in enumerate(robot.data.joint_names):
-            phase = math.sin(control_state.gait_phase + (0.0 if name.startswith(("FL", "RR")) else math.pi))
-            if "thigh" in name:
-                joint_target[0, index] += 0.09 * phase * direction * activity
-            elif "calf" in name:
-                joint_target[0, index] -= 0.12 * max(0.0, phase) * activity
+
+def apply_control(robot, control_state, dt, policy):
+    target_linear_x, target_angular_z = control_state.command()
+    linear_delta = 1.8 * dt
+    angular_delta = 5.0 * dt
+    linear_x = control_state.applied_linear_x + max(
+        -linear_delta, min(linear_delta, target_linear_x - control_state.applied_linear_x)
+    )
+    angular_z = control_state.applied_angular_z + max(
+        -angular_delta, min(angular_delta, target_angular_z - control_state.applied_angular_z)
+    )
 
     quaternion = robot.data.root_quat_w[0].tolist()
     yaw = yaw_from_quaternion(quaternion)
     roll, pitch = roll_pitch_from_quaternion(quaternion)
-    root_velocity = robot.data.root_vel_w.clone()
-    root_velocity[0, 0] = linear_x * math.cos(yaw)
-    root_velocity[0, 1] = linear_x * math.sin(yaw)
-    root_velocity[0, 3] = max(-1.5, min(1.5, -3.0 * roll - 0.8 * root_velocity[0, 3].item()))
-    root_velocity[0, 4] = max(-1.5, min(1.5, -3.0 * pitch - 0.8 * root_velocity[0, 4].item()))
-    root_velocity[0, 5] = angular_z
-    if height_assist:
-        height_error = robot.data.default_root_state[0, 2].item() - robot.data.root_pos_w[0, 2].item()
-        root_velocity[0, 2] = max(-0.4, min(0.4, 3.0 * height_error - 0.8 * root_velocity[0, 2].item()))
-    robot.write_root_velocity_to_sim(root_velocity)
-    robot.set_joint_position_target(joint_target)
+    if math.hypot(roll, pitch) > 0.45:
+        linear_x = 0.0
+        angular_z = 0.0
+    control_state.applied_linear_x = linear_x
+    control_state.applied_angular_z = angular_z
+
+    if control_state.policy_action is None:
+        control_state.policy_action = torch.zeros_like(robot.data.default_joint_pos)
+    if control_state.policy_step % 4 == 0:
+        commands = torch.tensor(
+            [[max(-1.0, min(1.0, linear_x)), 0.0, max(-1.0, min(1.0, angular_z))]],
+            device=robot.data.default_joint_pos.device,
+        )
+        observations = torch.cat((
+            robot.data.root_lin_vel_b,
+            robot.data.root_ang_vel_b,
+            robot.data.projected_gravity_b,
+            commands,
+            robot.data.joint_pos - robot.data.default_joint_pos,
+            robot.data.joint_vel - robot.data.default_joint_vel,
+            control_state.policy_action,
+        ), dim=-1)
+        with torch.inference_mode():
+            control_state.policy_action = policy(observations)
+    control_state.policy_step += 1
+    robot.set_joint_position_target(robot.data.default_joint_pos + 0.25 * control_state.policy_action)
     return linear_x, angular_z, yaw
 
 
 def create_lidar():
     cfg = MultiMeshRayCasterCfg(
         prim_path="/World/Go2/base",
-        update_period=0.05,
+        update_period=0.01,
         offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.15, 0.0, 0.20)),
         mesh_prim_paths=["/World/Environment"],
         ray_alignment="yaw",
@@ -508,10 +533,16 @@ def pointcloud_points(lidar):
         & (ranges >= POINTCLOUD_METADATA["range_min"])
         & (ranges < POINTCLOUD_METADATA["range_max"] - 0.01)
     )
-    return points[valid].detach().cpu().tolist()
+    coordinates = points[valid].detach().cpu().tolist()
+    ray_indices = valid.nonzero(as_tuple=False).squeeze(-1).detach().cpu().tolist()
+    horizontal_samples = POINTCLOUD_METADATA["horizontal_samples"]
+    return [
+        [*point, ray_index // horizontal_samples, (ray_index % horizontal_samples) / horizontal_samples * POINTCLOUD_UPDATE_PERIOD]
+        for point, ray_index in zip(coordinates, ray_indices)
+    ]
 
 
-def create_cameras(scene):
+def create_cameras():
     spawn = sim_utils.PinholeCameraCfg(
         focal_length=16.0, focus_distance=20.0, clipping_range=(0.05, 100.0)
     )
@@ -526,18 +557,7 @@ def create_cameras(scene):
             height=CAMERA_HEIGHT,
         )
     )
-    secondary = Camera(
-        CameraCfg(
-            prim_path="/World/CameraSecondary",
-            update_period=CAMERA_UPDATE_PERIOD,
-            offset=CameraCfg.OffsetCfg(pos=scene["camera"][0], convention="world"),
-            spawn=spawn.replace(),
-            data_types=["rgb"],
-            width=CAMERA_WIDTH,
-            height=CAMERA_HEIGHT,
-        )
-    )
-    return {"primary": primary, "secondary": secondary}
+    return {"primary": primary}
 
 
 def encode_camera(camera):
@@ -549,23 +569,31 @@ def encode_camera(camera):
 
 def main():
     scene = SCENES[args_cli.scene]
-    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=1.0 / 180.0, device=args_cli.device))
+    sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(
+        dt=1.0 / 200.0,
+        device=args_cli.device,
+        physx=sim_utils.PhysxCfg(
+            gpu_max_rigid_contact_count=2**19,
+            gpu_max_rigid_patch_count=2**14,
+            gpu_found_lost_pairs_capacity=2**16,
+            gpu_heap_capacity=2**24,
+            gpu_temp_buffer_capacity=2**22,
+            gpu_max_num_partitions=1,
+        ),
+    ))
     sim.set_camera_view(eye=scene["camera"][0], target=scene["camera"][1])
     robot = design_scene(args_cli.scene)
     lidar = create_lidar()
     pointcloud_lidar = create_pointcloud_lidar()
-    cameras = create_cameras(scene)
+    cameras = create_cameras()
     sim.reset()
     lidar.reset()
     pointcloud_lidar.reset()
     for camera in cameras.values():
         camera.reset()
-    cameras["secondary"].set_world_poses_from_view(
-        torch.tensor([scene["camera"][0]], device=sim.device),
-        torch.tensor([scene["camera"][1]], device=sim.device),
-    )
     reset_robot(robot)
     control_state = ControlState(CONTROL_CONFIG["command_timeout_ms"])
+    locomotion_policy = load_locomotion_policy(sim.device)
     control_server = ThreadingHTTPServer(("127.0.0.1", args_cli.control_port), ControlHandler)
     control_server.control_state = control_state
     control_server.daemon_threads = True
@@ -577,13 +605,13 @@ def main():
 
     steps = 0
     physics_dt = sim.get_physics_dt()
-    camera_interval_steps = max(1, round(CAMERA_UPDATE_PERIOD / physics_dt))
+    next_camera_update_time = CAMERA_UPDATE_PERIOD
     pointcloud_interval_steps = max(1, round(POINTCLOUD_UPDATE_PERIOD / physics_dt))
     next_step_deadline = time.perf_counter()
     while simulation_app.is_running() and not stop_requested:
-        linear_x, angular_z, yaw = apply_control(robot, control_state, physics_dt, args_cli.scene != "outdoor")
+        linear_x, angular_z, yaw = apply_control(robot, control_state, physics_dt, locomotion_policy)
         robot.write_data_to_sim()
-        camera_update_due = (steps + 1) % camera_interval_steps == 0
+        camera_update_due = (steps + 1) * physics_dt + 1e-9 >= next_camera_update_time
         pointcloud_update_due = (steps + 1) % pointcloud_interval_steps == 0
         render = (not args_cli.headless and steps % args_cli.render_interval == 0) or camera_update_due
         sim.step(render=render)
@@ -601,6 +629,7 @@ def main():
             pointcloud_lidar.update(dt=POINTCLOUD_UPDATE_PERIOD, force_recompute=True)
             control_state.update_pointcloud(pointcloud_points(pointcloud_lidar))
         if camera_update_due:
+            next_camera_update_time += CAMERA_UPDATE_PERIOD
             for name, camera in cameras.items():
                 camera.update(dt=CAMERA_UPDATE_PERIOD, force_recompute=True)
                 control_state.update_camera(name, encode_camera(camera))
@@ -617,12 +646,12 @@ def main():
             )
             os._exit(0)
 
-        if not args_cli.headless:
+        if not args_cli.test_steps:
             next_step_deadline += physics_dt
             now = time.perf_counter()
             if now < next_step_deadline:
                 time.sleep(next_step_deadline - now)
-            else:
+            elif now - next_step_deadline > 0.5:
                 next_step_deadline = now
     control_server.shutdown()
     control_server.server_close()

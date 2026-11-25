@@ -11,19 +11,20 @@ const { activeRobot, activeRobotId, selectActiveRobot } = useRobotStore()
 const { runtimeTopics, controlConfig } = useRuntimeConfigStore()
 const { pushRuntimeAlert } = useInspectionStore()
 
-const layerOptions = [
+const layerOptions = computed(() => [
   { key: 'map', label: '地图' },
   { key: 'scan', label: '激光' },
   { key: 'robot', label: '机器狗' },
   { key: 'path', label: '路径' },
   { key: 'goal', label: '目标' }
-]
+].filter((layer) => layer.key !== 'scan' || activeRobot.value?.lidarType !== '3d'))
 
 const activeOperation = ref('maps')
 const mapsRevision = ref(0)
 const selectedScenePath = ref('')
 
 const mappingActive = ref(false)
+const localizationActive = ref(false)
 const navigationActive = ref(false)
 const isSettingPose = ref(false)
 const multiPointMode = ref(false)
@@ -41,16 +42,18 @@ const tfData = ref(null)
 const odomData = ref(null)
 const planData = ref(null)
 const cameraPrimary = ref(null)
-const cameraSecondary = ref(null)
 const navFeedback = ref(null)
 const imuData = ref(null)
 const pointCloudData = ref(null)
 const registeredCloudData = ref(null)
 const fastlioPathData = ref(null)
+const localizationData = ref(null)
+const localizationPathData = ref(null)
+const globalMapData = ref(null)
 
 const mapLayers = ref({
   map: true,
-  scan: true,
+  scan: activeRobot.value?.lidarType !== '3d',
   robot: true,
   path: true,
   goal: true
@@ -77,23 +80,31 @@ let planSubId = null
 let feedbackSubId = null
 let imuSubId = null
 let cameraPrimarySubId = null
-let cameraSecondarySubId = null
 let pointCloudSubId = null
 let registeredCloudSubId = null
 let fastlioPathSubId = null
+let localizationSubId = null
+let localizationPathSubId = null
+let globalMapSubId = null
 
 let keyboardInterval = null
 let initialized = false
 let intentionalDisconnect = false
 
+watch(() => activeRobot.value?.lidarType, (lidarType) => {
+  mapLayers.value.scan = lidarType !== '3d'
+  if (lidarType === '3d') {
+    scanData.value = null
+    if (scanSubId) {
+      transport.unsubscribe(scanSubId)
+      scanSubId = null
+    }
+  }
+}, { immediate: true })
+
 const robotTopics = computed(() => {
   const namespace = activeRobot.value?.namespace?.replace(/^\/+|\/+$/g, '')
   const merged = { ...runtimeTopics.value }
-  const usesFastLio = ['fast_lio', 'fast_lio_localization'].includes(activeRobot.value?.slamAlgorithm) ||
-    activeRobot.value?.localizationAlgorithm === 'fast_lio_localization'
-  if (usesFastLio && merged.odom === TOPIC_DEFAULTS.odom) {
-    merged.odom = merged.fastlio_odom || '/Odometry'
-  }
   return Object.fromEntries(Object.entries(merged).map(([key, topic]) => {
     if (!namespace || !topic) return [key, topic]
     return [key, `/${namespace}/${topic.replace(/^\/+/, '')}`]
@@ -103,10 +114,27 @@ const robotTopics = computed(() => {
 const connectionState = computed(() => transport.connectionState.value)
 const errorMessage = computed(() => transport.errorMessage.value)
 const isConnected = computed(() => connectionState.value === 'connected')
+const hasRobotTopics = computed(() => {
+  if (!isConnected.value) return false
+  const ns = activeRobot.value?.namespace?.replace(/^\/+|\/+$/g, '')
+  for (const ch of transport.availableChannels.values()) {
+    if (ns) {
+      if (ch.topic?.startsWith(`/${ns}/`)) return true
+    } else if (
+      ch.topic === robotTopics.value.odom ||
+      ch.topic === robotTopics.value.pointcloud ||
+      ch.topic === robotTopics.value.camera_primary
+    ) {
+      return true
+    }
+  }
+  return false
+})
 
 const modeText = computed(() => {
   if (!isConnected.value) return '离线'
   if (isSettingPose.value) return '初始定位'
+  if (localizationActive.value) return '地图定位'
   if (mappingActive.value) return '建图作业'
   if (navigationActive.value) return multiPointMode.value ? '多点导航' : '自主导航'
   return '待机监控'
@@ -142,12 +170,14 @@ function clearAllData() {
   odomData.value = null
   planData.value = null
   cameraPrimary.value = null
-  cameraSecondary.value = null
   navFeedback.value = null
   imuData.value = null
   pointCloudData.value = null
   registeredCloudData.value = null
   fastlioPathData.value = null
+  localizationData.value = null
+  localizationPathData.value = null
+  globalMapData.value = null
   waypointQueue.value = []
   activeWaypoint.value = null
   topics.value = []
@@ -166,10 +196,12 @@ function clearConnectionState() {
   feedbackSubId = null
   imuSubId = null
   cameraPrimarySubId = null
-  cameraSecondarySubId = null
   pointCloudSubId = null
   registeredCloudSubId = null
   fastlioPathSubId = null
+  localizationSubId = null
+  localizationPathSubId = null
+  globalMapSubId = null
   clearAllData()
 }
 
@@ -270,7 +302,7 @@ function onChannelsReady(event) {
     })
   }
 
-  if (!scanSubId) {
+  if (!scanSubId && activeRobot.value?.lidarType !== '3d') {
     scanSubId = transport.subscribe(robotTopics.value.scan, (data) => {
       scanData.value = data
     })
@@ -320,12 +352,6 @@ function onChannelsReady(event) {
     })
   }
 
-  if (!cameraSecondarySubId && robotTopics.value.camera_secondary) {
-    cameraSecondarySubId = transport.subscribe(robotTopics.value.camera_secondary, (data) => {
-      cameraSecondary.value = data
-    })
-  }
-
   if (!pointCloudSubId && robotTopics.value.pointcloud) {
     pointCloudSubId = transport.subscribe(robotTopics.value.pointcloud, (data) => {
       pointCloudData.value = data
@@ -341,6 +367,24 @@ function onChannelsReady(event) {
   if (!fastlioPathSubId && robotTopics.value.fastlio_path) {
     fastlioPathSubId = transport.subscribe(robotTopics.value.fastlio_path, (data) => {
       fastlioPathData.value = data
+    })
+  }
+
+  if (!localizationSubId && robotTopics.value.localization) {
+    localizationSubId = transport.subscribe(robotTopics.value.localization, (data) => {
+      localizationData.value = data
+    })
+  }
+
+  if (!localizationPathSubId && robotTopics.value.localization_path) {
+    localizationPathSubId = transport.subscribe(robotTopics.value.localization_path, (data) => {
+      localizationPathData.value = data
+    })
+  }
+
+  if (!globalMapSubId && robotTopics.value.global_map) {
+    globalMapSubId = transport.subscribe(robotTopics.value.global_map, (data) => {
+      globalMapData.value = data
     })
   }
 }
@@ -426,8 +470,10 @@ async function emergencyStop() {
   onStopMotion()
   isSettingPose.value = false
   clearWaypoints()
+  const scene = activeRobot.value?.simulationScene
+  const query = scene ? `?scene=${encodeURIComponent(scene)}` : ''
   try {
-    await fetch(`${API_BASE}/simulation/velocity`, {
+    await fetch(`${API_BASE}/simulation/velocity${query}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ linearX: 0, angularZ: 0 })
@@ -567,6 +613,7 @@ export function useRosSessionStore() {
     mapsRevision,
     selectedScenePath,
     mappingActive,
+    localizationActive,
     navigationActive,
     isSettingPose,
     multiPointMode,
@@ -583,16 +630,19 @@ export function useRosSessionStore() {
     odomData,
     planData,
     cameraPrimary,
-    cameraSecondary,
     navFeedback,
     imuData,
     pointCloudData,
     registeredCloudData,
     fastlioPathData,
+    localizationData,
+    localizationPathData,
+    globalMapData,
     mapLayers,
     connectionState,
     errorMessage,
     isConnected,
+    hasRobotTopics,
     modeText,
     mapSize,
     linearSpeed,

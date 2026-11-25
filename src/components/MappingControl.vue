@@ -66,6 +66,7 @@ import UiIcon from './UiIcon.vue'
 const props = defineProps({
   connected: Boolean,
   isMapping: Boolean,
+  simulationScene: { type: String, default: '' },
   getMapPoints: { type: Function, default: null }
 })
 const emit = defineEmits(['mappingStarted', 'mappingRestarted', 'mapSaved', 'update:isMapping'])
@@ -79,7 +80,8 @@ let statusTimer = null
 
 async function checkStatus() {
   try {
-    const res = await fetch(`${API_BASE}/mapping_status`)
+    const qs = props.simulationScene ? `?scene=${encodeURIComponent(props.simulationScene)}` : ''
+    const res = await fetch(`${API_BASE}/mapping_status${qs}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     isMapping.value = data.isRunning
@@ -95,7 +97,11 @@ async function startMapping() {
   errorMsg.value = ''
   saveNotice.value = ''
   try {
-    const res = await fetch(`${API_BASE}/start_mapping`, { method: 'POST' })
+    const res = await fetch(`${API_BASE}/start_mapping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene: props.simulationScene || '' })
+    })
     const data = await res.json()
     if (!data.success) throw new Error(data.error || '启动失败')
     isMapping.value = true
@@ -112,7 +118,11 @@ async function stopMapping() {
   isLoading.value = true
   errorMsg.value = ''
   try {
-    const res = await fetch(`${API_BASE}/stop_mapping`, { method: 'POST' })
+    const res = await fetch(`${API_BASE}/stop_mapping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene: props.simulationScene || '' })
+    })
     const data = await res.json()
     if (!data.success) throw new Error(data.error || '停止失败')
     isMapping.value = false
@@ -129,16 +139,18 @@ async function restartMapping() {
   errorMsg.value = ''
   saveNotice.value = ''
   try {
-    await fetch(`${API_BASE}/stop_mapping`, { method: 'POST' })
     emit('mappingRestarted')
-    await new Promise((r) => setTimeout(r, 800))
-    const res = await fetch(`${API_BASE}/start_mapping`, { method: 'POST' })
+    const res = await fetch(`${API_BASE}/restart_mapping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene: props.simulationScene || '' })
+    })
     const data = await res.json()
     if (!data.success) throw new Error(data.error || '重启建图失败')
     isMapping.value = true
     emit('update:isMapping', true)
     emit('mappingStarted')
-    saveNotice.value = '已清空点云并重新开始建图'
+    saveNotice.value = '已清空点云并重启建图节点'
   } catch (err) {
     errorMsg.value = err.message || '重新建图失败'
   } finally {

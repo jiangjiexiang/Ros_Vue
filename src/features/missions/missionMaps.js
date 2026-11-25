@@ -1,5 +1,4 @@
 import { API_BASE } from '../../config.js'
-import { DEMO_MAPS } from './missionDemo.js'
 
 function normalizeApiMap(map, index) {
   const path = String(map.path || map.name || '')
@@ -29,9 +28,9 @@ export async function loadMapScenes({ timeoutMs = 4000 } = {}) {
     }
   } catch (error) {
     return {
-      maps: DEMO_MAPS.map((map) => ({ ...map })),
-      source: 'demo',
-      error: `地图服务不可用，已载入内置场景（${error.name === 'AbortError' ? '请求超时' : error.message}）。`
+      maps: [],
+      source: 'api',
+      error: `地图服务不可用（${error.name === 'AbortError' ? '请求超时' : error.message}）。`
     }
   } finally {
     clearTimeout(timeout)

@@ -1,40 +1,18 @@
 <template>
   <main class="inspection-workspace">
     <aside class="inspection-column inspection-left" aria-label="实时相机、连接与遥测">
-      <div class="camera-switcher-card">
-        <div class="camera-switch-pills" role="tablist" aria-label="相机视角切换">
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="cameraSlot === 'primary'"
-            :class="{ active: cameraSlot === 'primary' }"
-            @click="cameraSlot = 'primary'"
-          >
-            机载主相机
-          </button>
-          <button
-            type="button"
-            role="tab"
-            :aria-selected="cameraSlot === 'secondary'"
-            :class="{ active: cameraSlot === 'secondary' }"
-            @click="cameraSlot = 'secondary'"
-          >
-            副视角相机
-          </button>
-        </div>
-
-        <CameraPanel
-          :title="cameraSlot === 'primary' ? '机器狗机载相机' : '场景 / 辅助相机'"
-          :message="activeCameraMessage"
-          :connected="connected"
-          :topic="activeCameraMessage?.topic || activeCameraTopic"
-        />
-      </div>
+      <CameraPanel
+        title="机器狗机载相机"
+        :message="cameraPrimary"
+        :connected="connected"
+        :topic="cameraPrimary?.topic || cameraPrimaryTopic"
+      />
 
       <ConnectionPanel
         :robots="robots"
         :activeRobotId="activeRobotId"
         :connectionState="connectionState"
+        :hasTopics="hasRobotTopics"
         :errorMessage="errorMessage"
         @connect="emit('connect', $event)"
       />
@@ -94,6 +72,9 @@
         :pointCloudData="pointCloudData"
         :registeredCloudData="registeredCloudData"
         :fastlioPathData="fastlioPathData"
+        :localizationData="localizationData"
+        :localizationPathData="localizationPathData"
+        :globalMapData="globalMapData"
         :layers="mapLayers"
         :isMapping="isMapping"
         :isNavigating="isNavigating"
@@ -188,6 +169,17 @@
           <button
             type="button"
             role="tab"
+            :aria-selected="rightTab === 'localization'"
+            :class="{ active: rightTab === 'localization' }"
+            @click="rightTab = 'localization'"
+          >
+            <UiIcon name="crosshair" :size="15" />
+            <span>定位</span>
+            <i v-if="isLocalizing" class="tab-dot"></i>
+          </button>
+          <button
+            type="button"
+            role="tab"
             :aria-selected="rightTab === 'joystick'"
             :class="{ active: rightTab === 'joystick' }"
             @click="rightTab = 'joystick'"
@@ -201,6 +193,7 @@
           <NavigationControl
             :connected="connected"
             :mapsRevision="mapsRevision"
+            :simulationScene="robotConfig?.simulationScene || robotConfig?.namespace || ''"
             :selectedMap="selectedMap"
             :isNavigating="isNavigating"
             :isSettingPose="isSettingPose"
@@ -220,11 +213,22 @@
           <MappingControl
             :connected="connected"
             :isMapping="isMapping"
+            :simulationScene="robotConfig?.simulationScene || robotConfig?.namespace || ''"
             :getMapPoints="() => slamSceneRef?.exportGlobalMapPoints?.() || []"
             @update:isMapping="emit('update:isMapping', $event)"
             @mappingStarted="emit('mapping-started')"
             @mappingRestarted="onMappingRestarted"
             @mapSaved="emit('map-saved')"
+          />
+        </div>
+
+        <div v-show="rightTab === 'localization'" class="tab-panel-body">
+          <LocalizationControl
+            :connected="connected"
+            :isLocalizing="isLocalizing"
+            :simulationScene="robotConfig?.simulationScene || robotConfig?.namespace || ''"
+            :message="localizationData"
+            @update:isLocalizing="emit('update:isLocalizing', $event)"
           />
         </div>
 
@@ -255,6 +259,7 @@ import BatteryStatus from './BatteryStatus.vue'
 import CameraPanel from './CameraPanel.vue'
 import ConnectionPanel from './ConnectionPanel.vue'
 import JoystickControl from './JoystickControl.vue'
+import LocalizationControl from './LocalizationControl.vue'
 import MappingControl from './MappingControl.vue'
 import NavigationControl from './NavigationControl.vue'
 import SlamMap from './SlamMap.vue'
@@ -267,6 +272,7 @@ const props = defineProps({
   robotConfig: { type: Object, default: () => ({}) },
   activeRobotId: { type: String, default: '' },
   connectionState: { type: String, default: 'disconnected' },
+  hasRobotTopics: { type: Boolean, default: true },
   errorMessage: { type: String, default: '' },
   connected: { type: Boolean, default: false },
   controlConfig: { type: Object, default: () => ({}) },
@@ -279,6 +285,9 @@ const props = defineProps({
   pointCloudData: { type: Object, default: null },
   registeredCloudData: { type: Object, default: null },
   fastlioPathData: { type: Object, default: null },
+  localizationData: { type: Object, default: null },
+  localizationPathData: { type: Object, default: null },
+  globalMapData: { type: Object, default: null },
   sceneMode: { type: String, default: '2d' },
   navFeedback: { type: Object, default: null },
   batteryPercentage: { type: Number, default: -1 },
@@ -286,6 +295,7 @@ const props = defineProps({
   mapLayers: { type: Object, default: () => ({}) },
   layerOptions: { type: Array, default: () => [] },
   isMapping: { type: Boolean, default: false },
+  isLocalizing: { type: Boolean, default: false },
   isNavigating: { type: Boolean, default: false },
   isSettingPose: { type: Boolean, default: false },
   selectedMap: { type: String, default: '' },
@@ -295,9 +305,7 @@ const props = defineProps({
   activeWaypoint: { type: Object, default: null },
   mapsRevision: { type: Number, default: 0 },
   cameraPrimary: { type: Object, default: null },
-  cameraPrimaryTopic: { type: String, default: '' },
-  cameraSecondary: { type: Object, default: null },
-  cameraSecondaryTopic: { type: String, default: '' }
+  cameraPrimaryTopic: { type: String, default: '' }
 })
 
 const emit = defineEmits([
@@ -310,6 +318,7 @@ const emit = defineEmits([
   'initial-pose-set',
   'clear-waypoints',
   'mapping-started',
+  'mapping-restarted',
   'map-saved',
   'navigation-started',
   'save-mission',
@@ -317,23 +326,17 @@ const emit = defineEmits([
   'update:multiPointMode',
   'update:selectedMap',
   'update:isMapping',
+  'update:isLocalizing',
   'update:isNavigating'
 ])
 
-const cameraSlot = ref('primary')
 const rightTab = ref('navigation')
 const slamSceneRef = ref(null)
 
 function onMappingRestarted() {
   slamSceneRef.value?.clearGlobalMap?.()
+  emit('mapping-restarted')
 }
-
-const activeCameraMessage = computed(() => (
-  cameraSlot.value === 'secondary' ? props.cameraSecondary : props.cameraPrimary
-))
-const activeCameraTopic = computed(() => (
-  cameraSlot.value === 'secondary' ? props.cameraSecondaryTopic : props.cameraPrimaryTopic
-))
 
 const modeText = computed(() => {
   if (!props.connected) return '离线'
@@ -392,34 +395,6 @@ const interactionHint = computed(() => {
   padding-right: 2px;
   overflow-y: auto;
   scrollbar-gutter: stable;
-}
-.camera-switcher-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.camera-switch-pills {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--border-color);
-  border-radius: 9px;
-  background: var(--bg-card);
-}
-.camera-switch-pills button {
-  height: 29px;
-  border: 0;
-  border-radius: 6px;
-  color: var(--text-muted);
-  background: transparent;
-  font-size: var(--text-xs);
-  cursor: pointer;
-  transition: var(--transition);
-}
-.camera-switch-pills button.active {
-  color: var(--text-primary);
-  background: var(--bg-elevated);
 }
 .inspection-center {
   display: flex;

@@ -9,8 +9,8 @@
             <p>选择已配置机器人</p>
           </div>
         </div>
-        <span class="connection-badge" :class="connectionState">
-          <i class="status-dot" :class="connectionState"></i>{{ statusLabel }}
+        <span class="connection-badge" :class="effectiveState">
+          <i class="status-dot" :class="effectiveState"></i>{{ statusLabel }}
         </span>
       </div>
 
@@ -44,14 +44,19 @@ const props = defineProps({
   robots: { type: Array, required: true },
   activeRobotId: { type: String, required: true },
   connectionState: String,
+  hasTopics: { type: Boolean, default: true },
   errorMessage: String
 })
 const emit = defineEmits(['connect'])
 const selectedRobotId = ref(props.activeRobotId)
 const selectedRobot = computed(() => props.robots.find((robot) => robot.id === selectedRobotId.value))
-const statusLabel = computed(() => ({
-  connected: '在线', connecting: '连接中', error: '连接异常'
-}[props.connectionState] || '未连接'))
+const effectiveState = computed(() => (
+  props.connectionState === 'connected' && !props.hasTopics ? 'waiting' : props.connectionState
+))
+const statusLabel = computed(() => {
+  if (props.connectionState === 'connected' && !props.hasTopics) return '未启动'
+  return { connected: '在线', connecting: '连接中', error: '连接异常' }[props.connectionState] || '未连接'
+})
 
 watch(() => props.activeRobotId, (value) => { selectedRobotId.value = value }, { immediate: true })
 

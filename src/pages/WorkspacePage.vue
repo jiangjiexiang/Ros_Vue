@@ -30,7 +30,7 @@
           @click="setViewMode('cameras')"
         >
           <UiIcon name="camera" :size="15" />
-          <span>双路相机</span>
+          <span>机载相机</span>
         </button>
       </div>
 
@@ -79,6 +79,7 @@
         :robotConfig="activeRobot"
         :activeRobotId="activeRobotId"
         :connectionState="connectionState"
+        :hasRobotTopics="hasRobotTopics"
         :errorMessage="errorMessage"
         :connected="isConnected"
         :controlConfig="controlConfig"
@@ -91,6 +92,9 @@
         :pointCloudData="pointCloudData"
         :registeredCloudData="registeredCloudData"
         :fastlioPathData="fastlioPathData"
+        :localizationData="localizationData"
+        :localizationPathData="localizationPathData"
+        :globalMapData="globalMapData"
         :sceneMode="sceneMode"
         :navFeedback="navFeedback"
         :batteryPercentage="batteryPercentage"
@@ -99,18 +103,18 @@
         :layerOptions="layerOptions"
         :cameraPrimary="cameraPrimary"
         :cameraPrimaryTopic="robotTopics.camera_primary"
-        :cameraSecondary="cameraSecondary"
-        :cameraSecondaryTopic="robotTopics.camera_secondary"
         :mapsRevision="mapsRevision"
         :waypoints="waypointQueue"
         :activeWaypoint="activeWaypoint"
         :waypointCount="waypointCount"
         v-model:isMapping="mappingActive"
+        v-model:isLocalizing="localizationActive"
         v-model:isNavigating="navigationActive"
         v-model:isSettingPose="isSettingPose"
         v-model:selectedMap="selectedScenePath"
         v-model:multiPointMode="multiPointMode"
         @connect="connectRobot"
+        @mapping-restarted="() => { registeredCloudData = null; fastlioPathData = null }"
         @map-saved="mapsRevision++"
         @velocity-change="onVelocityChange"
         @stop-motion="onStopMotion"
@@ -130,6 +134,8 @@
           :robots="robots"
           :activeRobotId="activeRobotId"
           :connectionState="connectionState"
+          :hasTopics="hasRobotTopics"
+        :hasRobotTopics="hasRobotTopics"
           :errorMessage="errorMessage"
           @connect="connectRobot"
         />
@@ -189,6 +195,9 @@
           :pointCloudData="pointCloudData"
           :registeredCloudData="registeredCloudData"
           :fastlioPathData="fastlioPathData"
+          :localizationData="localizationData"
+          :localizationPathData="localizationPathData"
+          :globalMapData="globalMapData"
           :layers="mapLayers"
           :isMapping="mappingActive"
           :isNavigating="navigationActive"
@@ -247,7 +256,7 @@
         <section class="card layer-card">
           <div class="card-header">
             <span><UiIcon name="layers" :size="17" />地图图层</span>
-            <small>{{ Object.values(mapLayers).filter(Boolean).length }}/5</small>
+            <small>{{ Object.values(mapLayers).filter(Boolean).length }}/{{ layerOptions.length }}</small>
           </div>
           <div class="card-body">
             <div class="layer-controls">
@@ -265,16 +274,10 @@
     <main v-else class="cameras-workspace workspace-body">
       <section class="cameras-grid">
         <CameraPanel
-          title="主视角 · 机器狗机载相机"
+          title="机器狗机载相机"
           :message="cameraPrimary"
           :connected="isConnected"
           :topic="cameraPrimary?.topic || robotTopics.camera_primary"
-        />
-        <CameraPanel
-          title="副视角 · 观察 / 辅助相机"
-          :message="cameraSecondary"
-          :connected="isConnected"
-          :topic="cameraSecondary?.topic || robotTopics.camera_secondary"
         />
       </section>
 
@@ -283,6 +286,8 @@
           :robots="robots"
           :activeRobotId="activeRobotId"
           :connectionState="connectionState"
+          :hasTopics="hasRobotTopics"
+        :hasRobotTopics="hasRobotTopics"
           :errorMessage="errorMessage"
           @connect="connectRobot"
         />
@@ -336,6 +341,7 @@ const {
   mapsRevision,
   selectedScenePath,
   mappingActive,
+  localizationActive,
   navigationActive,
   isSettingPose,
   multiPointMode,
@@ -354,12 +360,15 @@ const {
   pointCloudData,
   registeredCloudData,
   fastlioPathData,
+  localizationData,
+  localizationPathData,
+  globalMapData,
   planData,
   cameraPrimary,
-  cameraSecondary,
   navFeedback,
   mapLayers,
   connectionState,
+  hasRobotTopics,
   errorMessage,
   isConnected,
   modeText,
@@ -380,7 +389,7 @@ const {
 
 const slamMapRef = ref(null)
 const viewMode = ref(resolveInitialMode(route.query.mode))
-const sceneMode = ref('2d')
+const sceneMode = ref(activeRobot.value?.lidarType === '2d' ? '2d' : '3d')
 
 function resolveInitialMode(queryMode) {
   if (queryMode === 'monitor' || queryMode === 'cameras') return queryMode
@@ -588,7 +597,7 @@ onBeforeUnmount(() => {
 
 .cameras-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-content: start;
 }

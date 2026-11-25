@@ -8,6 +8,8 @@ export const CONTROL_DEFAULTS = {
   command_timeout_ms: 600
 }
 
+export const MAPPING_DEFAULTS = { auto_start: false }
+
 export const TOPIC_DEFAULTS = {
   cmd_vel: '/cmd_vel',
   battery: '/battery',
@@ -21,15 +23,18 @@ export const TOPIC_DEFAULTS = {
   navigate_feedback: '/navigate_to_pose/_action/feedback',
   imu: '/imu',
   camera_primary: '/camera1/preview/compressed',
-  camera_secondary: '/camera2/preview/compressed',
   pointcloud: '/points',
   registered_cloud: '/cloud_registered',
   fastlio_odom: '/Odometry',
-  fastlio_path: '/path'
+  fastlio_path: '/path',
+  localization: '/localization',
+  localization_path: '/localization/path',
+  global_map: '/global_map'
 }
 
 const runtimeTopics = ref({ ...TOPIC_DEFAULTS })
 const controlConfig = ref({ ...CONTROL_DEFAULTS })
+const mappingConfig = ref({ ...MAPPING_DEFAULTS })
 const workspace = ref('..')
 const mapsDir = ref('maps')
 const tasks = ref({ mapping: [], navigation: [] })
@@ -46,6 +51,7 @@ function applyRuntimeConfig(data) {
   if (!data || typeof data !== 'object') return
   runtimeTopics.value = { ...TOPIC_DEFAULTS, ...(data.topics || {}) }
   controlConfig.value = { ...CONTROL_DEFAULTS, ...(data.control || {}) }
+  mappingConfig.value = { ...MAPPING_DEFAULTS, ...(data.mapping || {}) }
   workspace.value = typeof data.workspace === 'string' && data.workspace ? data.workspace : '..'
   mapsDir.value = typeof data.maps_dir === 'string' && data.maps_dir ? data.maps_dir : 'maps'
   tasks.value = {
@@ -76,6 +82,7 @@ async function loadRuntimeConfig() {
     loadError.value = err.message || '加载运行时配置失败'
     runtimeTopics.value = { ...TOPIC_DEFAULTS }
     controlConfig.value = { ...CONTROL_DEFAULTS }
+    mappingConfig.value = { ...MAPPING_DEFAULTS }
     return null
   } finally {
     loading.value = false
@@ -86,6 +93,7 @@ export function useRuntimeConfigStore() {
   return {
     runtimeTopics,
     controlConfig,
+    mappingConfig,
     workspace,
     mapsDir,
     tasks,

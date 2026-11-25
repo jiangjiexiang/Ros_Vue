@@ -93,6 +93,9 @@ const props = defineProps({
   pointCloudData: { type: Object, default: null },
   registeredCloudData: { type: Object, default: null },
   fastlioPathData: { type: Object, default: null },
+  localizationData: { type: Object, default: null },
+  localizationPathData: { type: Object, default: null },
+  globalMapData: { type: Object, default: null },
   layers: { type: Object, default: () => ({}) },
   isMapping: { type: Boolean, default: false },
   isNavigating: { type: Boolean, default: false },
@@ -125,6 +128,7 @@ const trailPositions = new Float32Array(MAX_TRAIL_POINTS * 3)
 let trailCount = 0
 let hasValidRegisteredMap = false
 let hasCameraInitAnchor = false
+let pendingRegisteredCloud = null
 const cameraInitPos = new THREE.Vector3()
 const cameraInitQuat = new THREE.Quaternion()
 
@@ -161,6 +165,7 @@ let mapMesh = null
 let mapTexture = null
 let liveCloudPoints = null
 let regCloudPoints = null
+let savedMapPoints = null
 let scanPoints = null
 let robotGroup = null
 let planLine = null
@@ -188,6 +193,40 @@ function composeTransform(a, b) {
     translation: { x: pos.x, y: pos.y, z: pos.z },
     rotation: { x: quat.x, y: quat.y, z: quat.z, w: quat.w }
   }
+}
+
+function invertTransform(tf) {
+  const q = new THREE.Quaternion(tf.rotation.x, tf.rotation.y, tf.rotation.z, tf.rotation.w).invert()
+  const p = new THREE.Vector3(tf.translation.x, tf.translation.y, tf.translation.z || 0).negate().applyQuaternion(q)
+  return {
+    translation: { x: p.x, y: p.y, z: p.z },
+    rotation: { x: q.x, y: q.y, z: q.z, w: q.w }
+  }
+}
+
+function tryAnchorCameraInit() {
+  if (hasCameraInitAnchor) return true
+  const mapToBody = lookupTf('map', 'base_link') || lookupTf('odom', 'base_link')
+  if (!mapToBody) return false
+
+  let camToBody = lookupTf('camera_init', 'body')
+  if (!camToBody && props.odomData?.pose?.pose && (props.odomData?.header?.frame_id || '').includes('camera_init')) {
+    const p = props.odomData.pose.pose.position
+    const o = props.odomData.pose.pose.orientation
+    camToBody = {
+      translation: { x: p.x, y: p.y, z: p.z || 0 },
+      rotation: { x: o.x, y: o.y, z: o.z, w: o.w }
+    }
+  }
+  if (!camToBody) return false
+
+  const mapToCam = composeTransform(mapToBody, invertTransform(camToBody))
+  cameraInitPos.set(mapToCam.translation.x, mapToCam.translation.y, 0)
+  const q = mapToCam.rotation
+  const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+  cameraInitQuat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), yaw)
+  hasCameraInitAnchor = true
+  return true
 }
 
 function lookupTf(fromFrame, toFrame) {
@@ -367,6 +406,13 @@ function initThree() {
   regCloudPoints.frustumCulled = false
   scene.add(regCloudPoints)
 
+  savedMapPoints = new THREE.Points(
+    new THREE.BufferGeometry(),
+    new THREE.PointsMaterial({ size: 0.10, color: 0x94a3b8, opacity: 0.72, transparent: true, sizeAttenuation: true })
+  )
+  savedMapPoints.frustumCulled = false
+  scene.add(savedMapPoints)
+
   // 2D LaserScan points
   const scanGeom = new THREE.BufferGeometry()
   scanPoints = new THREE.Points(
@@ -429,6 +475,7 @@ function syncLayerVisibility() {
   if (mapMesh) mapMesh.visible = localLayers.map
   if (liveCloudPoints) liveCloudPoints.visible = localLayers.pointcloud
   if (regCloudPoints) regCloudPoints.visible = localLayers.registered
+  if (savedMapPoints) savedMapPoints.visible = localLayers.registered
   if (scanPoints) scanPoints.visible = localLayers.scan
   if (robotGroup) robotGroup.visible = localLayers.robot && hasRobotPos
   if (planLine) planLine.visible = localLayers.path
@@ -543,6 +590,7 @@ function clearGlobalMap() {
   mapPointCount.value = 0
   hasValidRegisteredMap = false
   hasCameraInitAnchor = false
+  pendingRegisteredCloud = null
   trailCount = 0
   if (regCloudPoints) {
     regCloudPoints.geometry.setDrawRange(0, 0)
@@ -553,7 +601,7 @@ function clearGlobalMap() {
 }
 
 function appendToGlobalMap(positions, count, posVec, quat) {
-  if (!regCloudPoints || count <= 0) return
+  if (!props.isMapping || !regCloudPoints || count <= 0) return
   const pt = new THREE.Vector3()
   let added = 0
   const invVoxel = 1 / VOXEL_SIZE
@@ -638,7 +686,7 @@ function updatePointCloudMesh(pointsObj, cloudMsg, isPrimary = false) {
     pointsObj.geometry.computeBoundingSphere()
 
     // Fallback accumulation from live /points if FAST-LIO registered cloud hasn't provided valid points
-    if (!hasValidRegisteredMap && (tf || hasRobotPos)) {
+    if (props.isMapping && !hasValidRegisteredMap && (tf || hasRobotPos)) {
       appendToGlobalMap(positions, count, posVec, quat)
     }
     return
@@ -653,23 +701,37 @@ function updatePointCloudMesh(pointsObj, cloudMsg, isPrimary = false) {
     const z = positions[i * 3 + 2]
     if (Math.abs(x) < 250 && Math.abs(y) < 250 && z > -10 && z < 60) validCount += 1
   }
-  if (validCount > 0) {
-    if (!hasCameraInitAnchor && hasRobotPos) {
-      cameraInitPos.copy(robotGroup.position)
-      cameraInitQuat.copy(robotGroup.quaternion)
-      hasCameraInitAnchor = true
-    }
-    hasValidRegisteredMap = true
-    if (tf) {
-      appendToGlobalMap(positions, count, posVec, quat)
-    } else if (hasCameraInitAnchor) {
+  if (props.isMapping && validCount > 0) {
+    if (!tf) {
+      if (!tryAnchorCameraInit()) {
+        pendingRegisteredCloud = cloudMsg
+        return
+      }
+      hasValidRegisteredMap = true
       appendToGlobalMap(positions, count, cameraInitPos, cameraInitQuat)
     } else {
-      appendToGlobalMap(positions, count, null, null)
+      hasValidRegisteredMap = true
+      appendToGlobalMap(positions, count, posVec, quat)
     }
   } else if (count > 0) {
     hasValidRegisteredMap = false
   }
+}
+
+function updateGlobalMap(cloudMsg) {
+  if (!savedMapPoints) return
+  if (!cloudMsg) {
+    savedMapPoints.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3))
+    return
+  }
+  let positions = cloudMsg.positions
+  if (!(positions instanceof Float32Array)) {
+    const decoded = decodeRosbridgeCloud(cloudMsg)
+    positions = decoded?.positions
+  }
+  if (!(positions instanceof Float32Array)) return
+  savedMapPoints.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  savedMapPoints.geometry.computeBoundingSphere()
 }
 
 function updateLaserScan(scanMsg) {
@@ -718,7 +780,13 @@ function updateRobotPoseFromTfOrOdom() {
   let pz = 0
   let q = null
 
-  if (tf) {
+  if (props.localizationData?.pose?.pose) {
+    const pose = props.localizationData.pose.pose
+    px = pose.position.x
+    py = pose.position.y
+    pz = pose.position.z || 0
+    q = pose.orientation
+  } else if (tf) {
     px = tf.translation.x
     py = tf.translation.y
     pz = tf.translation.z || 0
@@ -752,7 +820,7 @@ function updateRobotPoseFromTfOrOdom() {
   robotGroup.visible = localLayers.robot
 
   // Append to live SLAM trajectory trail if FAST-LIO path isn't active
-  if (trajLine && (!props.fastlioPathData?.poses?.length)) {
+  if (trajLine && !props.fastlioPathData?.poses?.length && !props.localizationPathData?.poses?.length) {
     const lastIdx = (trailCount - 1) * 3
     const dist = trailCount === 0
       ? 1
@@ -916,6 +984,11 @@ watch(() => props.tfData, (newData) => {
     tfTree[key] = tf.transform
   }
   updateRobotPoseFromTfOrOdom()
+  if (pendingRegisteredCloud && !hasCameraInitAnchor && tryAnchorCameraInit()) {
+    const queued = pendingRegisteredCloud
+    pendingRegisteredCloud = null
+    updatePointCloudMesh(regCloudPoints, queued, false)
+  }
   if (props.scanData) {
     const tf = resolveFrameInMap(props.scanData.header?.frame_id || 'base_scan')
     if (tf && scanPoints) {
@@ -925,13 +998,29 @@ watch(() => props.tfData, (newData) => {
   }
 })
 
+watch(() => props.connected, (isConn) => {
+  if (!isConn) {
+    for (const k of Object.keys(tfTree)) delete tfTree[k]
+    hasRobotPos = false
+    clearGlobalMap()
+  }
+})
+
+watch(() => props.isMapping, (mapping) => {
+  if (!mapping) pendingRegisteredCloud = null
+})
 watch(() => props.odomData, updateRobotPoseFromTfOrOdom)
 watch(() => props.mapData, updateOccupancyMap)
 watch(() => props.scanData, updateLaserScan)
 watch(() => props.pointCloudData, (msg) => updatePointCloudMesh(liveCloudPoints, msg, true))
 watch(() => props.registeredCloudData, (msg) => updatePointCloudMesh(regCloudPoints, msg, false))
 watch(() => props.planData, (msg) => updatePathLine(planLine, msg, 0.06))
-watch(() => props.fastlioPathData, (msg) => updatePathLine(trajLine, msg, 0.04))
+watch(() => props.fastlioPathData, (msg) => {
+  if (!props.localizationPathData?.poses?.length) updatePathLine(trajLine, msg, 0.04)
+})
+watch(() => props.localizationData, updateRobotPoseFromTfOrOdom)
+watch(() => props.localizationPathData, (msg) => updatePathLine(trajLine, msg, 0.04))
+watch(() => props.globalMapData, updateGlobalMap)
 watch([() => props.waypoints, () => props.activeWaypoint], rebuildWaypoints, { deep: true })
 watch(localLayers, syncLayerVisibility, { deep: true })
 

@@ -1,6 +1,6 @@
 <template>
   <section class="control-section">
-    <p class="control-description">选择已保存的地图并启动配置的导航任务，然后在地图中设置初始位置与目标。</p>
+    <p class="control-description">选择保存地图并启动定位后，直接双击地图目标即可前往，无需预设巡检点。</p>
 
     <div class="nav-section">
       <label class="nav-label" for="navigation-map">导航地图</label>
@@ -27,10 +27,10 @@
       :disabled="!connected || isLoading || !selectedMap"
       @click="startNavigation"
     >
-      <UiIcon name="play" :size="15" />{{ isLoading ? '正在启动…' : '开始导航' }}
+      <UiIcon name="play" :size="15" />{{ isLoading ? '正在启动…' : '启动定位与点击导航' }}
     </button>
     <button v-else class="btn btn-disconnect nav-btn" :disabled="isLoading" @click="stopNavigation">
-      <UiIcon name="stop" :size="15" />{{ isLoading ? '正在停止…' : '停止导航' }}
+      <UiIcon name="stop" :size="15" />{{ isLoading ? '正在停止…' : '停止定位与导航' }}
     </button>
 
     <button
@@ -92,7 +92,8 @@ const props = defineProps({
   selectedMap: { type: String, default: '' },
   multiPointMode: { type: Boolean, default: false },
   waypointCount: { type: Number, default: 0 },
-  mapsRevision: { type: Number, default: 0 }
+  mapsRevision: { type: Number, default: 0 },
+  simulationScene: { type: String, default: '' }
 })
 
 const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'update:selectedMap', 'navigationStarted', 'clear-waypoints', 'save-mission'])
@@ -130,7 +131,8 @@ async function loadMaps() {
 
 async function checkStatus() {
   try {
-    const res = await fetch(`${API_BASE}/navigation_status`)
+    const query = props.simulationScene ? `?scene=${encodeURIComponent(props.simulationScene)}` : ''
+    const res = await fetch(`${API_BASE}/localization_status${query}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     isNavigating.value = data.isRunning
@@ -149,10 +151,10 @@ async function startNavigation() {
   isLoading.value = true
   errorMsg.value = ''
   try {
-    const res = await fetch(`${API_BASE}/start_navigation`, {
+    const res = await fetch(`${API_BASE}/start_localization`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mapPath: selectedMap.value })
+      body: JSON.stringify({ scene: props.simulationScene, mapPath: selectedMap.value })
     })
     const data = await res.json()
     if (!data.success) throw new Error(data.error || '启动失败')
@@ -176,7 +178,11 @@ async function stopNavigation() {
     emit('clear-waypoints')
   }
   try {
-    const res = await fetch(`${API_BASE}/stop_navigation`, { method: 'POST' })
+    const res = await fetch(`${API_BASE}/stop_localization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene: props.simulationScene })
+    })
     const data = await res.json()
     if (!data.success) throw new Error(data.error || '停止失败')
     isNavigating.value = false

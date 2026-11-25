@@ -17,6 +17,7 @@ import struct
 import threading
 import time
 from array import array
+from contextlib import AsyncExitStack
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
@@ -47,10 +48,11 @@ KNOWN_TYPES = {
     "/map": "nav_msgs/msg/OccupancyGrid",
     "/plan": "nav_msgs/msg/Path",
     "/path": "nav_msgs/msg/Path",
+    "/global_map": "sensor_msgs/msg/PointCloud2",
+    "/localization": "nav_msgs/msg/Odometry",
     "/tf": "tf2_msgs/msg/TFMessage",
     "/battery": "std_msgs/msg/UInt16",
     "/camera1/preview/compressed": "sensor_msgs/msg/CompressedImage",
-    "/camera2/preview/compressed": "sensor_msgs/msg/CompressedImage",
     "/navigate_to_pose/_action/feedback": "nav2_msgs/action/NavigateToPose_FeedbackMessage",
 }
 
@@ -70,6 +72,15 @@ def normalize_schema(schema: str) -> str:
     if len(parts) == 2:
         return f"{parts[0]}/msg/{parts[1]}"
     return schema
+
+
+def known_topic_type(topic: str) -> str:
+    if topic in KNOWN_TYPES:
+        return KNOWN_TYPES[topic]
+    for known_topic, schema in KNOWN_TYPES.items():
+        if topic.endswith(known_topic):
+            return schema
+    return ""
 
 
 def finite_or_none(value: float):
@@ -270,17 +281,41 @@ class WebSocketClient:
         self.reader = reader
         self.writer = writer
         self.send_lock = asyncio.Lock()
+        self.send_queue = asyncio.Queue(maxsize=128)
+        self.sender_task = None
         self.subscriptions = set()
         self.closed = False
 
     async def send_text(self, text: str):
         await self._send_raw(encode_ws_frame(0x1, text.encode("utf-8")))
 
-    async def send_binary(self, data: bytes):
-        await self._send_raw(encode_ws_frame(0x2, data))
-
     async def send_pong(self, data: bytes):
         await self._send_raw(encode_ws_frame(0xA, data))
+
+    def start_sender(self):
+        self.sender_task = asyncio.create_task(self._send_queued_frames())
+
+    def enqueue_frame(self, frame: bytes):
+        if self.closed:
+            return
+        if self.send_queue.full():
+            try:
+                self.send_queue.get_nowait()
+                self.send_queue.task_done()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self.send_queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            pass
+
+    async def _send_queued_frames(self):
+        while not self.closed:
+            frame = await self.send_queue.get()
+            try:
+                await self._send_raw(frame)
+            finally:
+                self.send_queue.task_done()
 
     async def _send_raw(self, frame: bytes):
         if self.closed:
@@ -295,9 +330,18 @@ class WebSocketClient:
                 self.closed = True
 
     def close(self):
-        if self.closed:
+        if self.closed and self.sender_task is None:
             return
         self.closed = True
+        if self.sender_task is not None:
+            self.sender_task.cancel()
+            self.sender_task = None
+        while not self.send_queue.empty():
+            try:
+                self.send_queue.get_nowait()
+                self.send_queue.task_done()
+            except asyncio.QueueEmpty:
+                break
         try:
             self.writer.close()
         except Exception:
@@ -305,14 +349,15 @@ class WebSocketClient:
 
 
 class DogLinkGatewayNode(Node):
-    def __init__(self, loop: asyncio.AbstractEventLoop):
-        super().__init__("doglink_gateway")
+    def __init__(self, loop: asyncio.AbstractEventLoop, node_name: str):
+        super().__init__(node_name)
         self.loop = loop
         self.ws_clients = set()
         self.ros_subs = {}
         self.ros_pubs = {}
         self.topic_subscribers = {}
         self.cached_topics = []
+        self.subscription_created = {}
         self.state_lock = threading.Lock()
         self.create_timer(2.0, self.refresh_topics)
         self.get_logger().info("DogLink ROS 2 网关节点已初始化")
@@ -331,19 +376,40 @@ class DogLinkGatewayNode(Node):
             self.cached_topics = topics
             payload = json.dumps({"op": "topics", "topics": topics}, separators=(",", ":"))
             self.loop.call_soon_threadsafe(self._broadcast_text, payload)
+        self.recover_subscriptions()
+
+    def recover_subscriptions(self):
+        now = time.monotonic()
+        with self.state_lock:
+            candidates = [
+                (topic, sub) for topic, sub in self.ros_subs.items()
+                if now - self.subscription_created.get(topic, now) >= 8.0
+            ]
+        for topic, sub in candidates:
+            if self.count_publishers(topic) > 0:
+                continue
+            with self.state_lock:
+                if self.ros_subs.get(topic) is not sub:
+                    continue
+                self.ros_subs.pop(topic, None)
+                self.subscription_created.pop(topic, None)
+                clients = list(self.topic_subscribers.get(topic, ()))
+            self.destroy_subscription(sub)
+            if clients:
+                self.get_logger().warning(f"发布者尚未发现，重新订阅 ROS 话题: {topic}")
+                self.subscribe_topic(clients[0], topic)
 
     def _broadcast_text(self, text: str):
+        frame = encode_ws_frame(0x1, text.encode("utf-8"))
         for client in list(self.ws_clients):
-            asyncio.create_task(client.send_text(text))
+            client.enqueue_frame(frame)
 
     def _dispatch_topic(self, topic: str, is_binary: bool, payload: bytes):
         with self.state_lock:
             targets = list(self.topic_subscribers.get(topic, ()))
+        frame = encode_ws_frame(0x2 if is_binary else 0x1, payload)
         for client in targets:
-            if is_binary:
-                asyncio.create_task(client.send_binary(payload))
-            else:
-                asyncio.create_task(client.send_text(payload.decode("utf-8")))
+            client.enqueue_frame(frame)
 
     def subscribe_topic(self, client: WebSocketClient, topic: str):
         with self.state_lock:
@@ -359,7 +425,7 @@ class DogLinkGatewayNode(Node):
                 schema = item["schemaName"]
                 break
         if not schema:
-            schema = KNOWN_TYPES.get(topic, "")
+            schema = known_topic_type(topic)
         if not schema:
             self.get_logger().warning(f"未找到话题 {topic} 的消息类型，暂无法订阅")
             return
@@ -383,6 +449,7 @@ class DogLinkGatewayNode(Node):
         sub = self.create_subscription(msg_cls, topic, on_message, qos)
         with self.state_lock:
             self.ros_subs[topic] = sub
+            self.subscription_created[topic] = time.monotonic()
         self.get_logger().info(f"已订阅 ROS 话题: {topic} ({schema})")
 
     def unsubscribe_topic(self, client: WebSocketClient, topic: str):
@@ -395,6 +462,7 @@ class DogLinkGatewayNode(Node):
                 if not subs:
                     self.topic_subscribers.pop(topic, None)
                     sub_to_destroy = self.ros_subs.pop(topic, None)
+                    self.subscription_created.pop(topic, None)
         if sub_to_destroy is not None:
             self.destroy_subscription(sub_to_destroy)
 
@@ -404,7 +472,7 @@ class DogLinkGatewayNode(Node):
             self.unsubscribe_topic(client, topic)
 
     def publish_from_client(self, topic: str, schema: str, msg_dict: dict):
-        norm = normalize_schema(schema) or KNOWN_TYPES.get(topic, "")
+        norm = normalize_schema(schema) or known_topic_type(topic)
         if not norm:
             return
         pub = self.ros_pubs.get(topic)
@@ -525,11 +593,12 @@ async def handle_ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamW
             "topics": topics,
         }, separators=(",", ":"))
         await client.send_text(hello)
+        client.start_sender()
 
         fragments = bytearray()
         frag_opcode = 0
         while not client.closed:
-            fin, opcode, payload = await read_ws_frame(reader)
+            fin, opcode, payload = await asyncio.wait_for(read_ws_frame(reader), timeout=30.0)
             if opcode == 0x8:
                 break
             if opcode == 0x9:
@@ -574,10 +643,10 @@ async def handle_ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamW
                 pass
 
 
-async def run_gateway(host: str, port: int):
+async def run_gateway(host: str, ports: list[int], node_name: str):
     loop = asyncio.get_running_loop()
     rclpy.init()
-    node = DogLinkGatewayNode(loop)
+    node = DogLinkGatewayNode(loop, node_name)
 
     stop_event = threading.Event()
 
@@ -588,15 +657,25 @@ async def run_gateway(host: str, port: int):
     ros_thread = threading.Thread(target=spin_ros, daemon=True)
     ros_thread.start()
 
-    server = await asyncio.start_server(lambda r, w: handle_ws_client(r, w, node), host, port)
-    node.get_logger().info(f"DogLink WebSocket 网关监听中: ws://{host}:{port}")
+    async with AsyncExitStack() as stack:
+        servers = []
+        for port in ports:
+            server = await asyncio.start_server(lambda r, w: handle_ws_client(r, w, node), host, port)
+            await stack.enter_async_context(server)
+            servers.append(server)
+            node.get_logger().info(f"DogLink WebSocket 网关监听中: ws://{host}:{port}")
 
-    async with server:
+        def stop_servers():
+            for server in servers:
+                server.close()
+
+        loop.add_signal_handler(signal.SIGTERM, stop_servers)
         try:
-            await server.serve_forever()
+            await asyncio.gather(*(server.serve_forever() for server in servers))
         except asyncio.CancelledError:
             pass
         finally:
+            loop.remove_signal_handler(signal.SIGTERM)
             stop_event.set()
             ros_thread.join(timeout=1.0)
             node.destroy_node()
@@ -608,10 +687,12 @@ def main():
     parser = argparse.ArgumentParser(description="DogLink ROS 2 轻量级 WebSocket 网关")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8768, help="WebSocket 端口 (默认 8768)")
+    parser.add_argument("--ports", type=int, nargs="+", help="同时监听多个 WebSocket 端口")
+    parser.add_argument("--node-name", default="doglink_gateway", help="ROS 2 节点名称")
     args = parser.parse_args()
 
     try:
-        asyncio.run(run_gateway(args.host, args.port))
+        asyncio.run(run_gateway(args.host, args.ports or [args.port], args.node_name))
     except KeyboardInterrupt:
         pass
 

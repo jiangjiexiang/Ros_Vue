@@ -92,6 +92,20 @@
           </div>
         </section>
 
+        <section v-show="activeTab === 'mapping'" class="settings-section">
+          <div class="section-heading">
+            <h2>建图控制</h2>
+            <p>决定启动仿真场景时是否自动启动 FAST-LIO，默认不自动建图。</p>
+          </div>
+          <label class="mapping-toggle">
+            <input v-model="form.mapping.auto_start" type="checkbox">
+            <span>启动仿真场景时自动开始建图</span>
+          </label>
+          <p class="restart-note">
+            此选项在下次启动场景时生效。当前场景的建图仍由工作台“开始建图 / 停止建图”按钮控制。
+          </p>
+        </section>
+
         <section v-show="activeTab === 'topics'" class="settings-section">
           <div class="section-heading topic-heading">
             <div>
@@ -278,7 +292,8 @@ const TOPIC_GROUPS = [
   { title: '控制与里程计', keys: ['cmd_vel', 'odom', 'imu', 'battery', 'tf'] },
   { title: '建图与导航', keys: ['map', 'plan', 'goal_pose', 'initial_pose', 'navigate_feedback'] },
   { title: '激光雷达与 3D 点云', keys: ['scan', 'pointcloud', 'registered_cloud', 'fastlio_odom', 'fastlio_path'] },
-  { title: '机载与观察相机', keys: ['camera_primary', 'camera_secondary'] }
+  { title: '定位与点击导航', keys: ['localization', 'localization_path', 'global_map'] },
+  { title: '机载相机', keys: ['camera_primary'] }
 ]
 const PRESET_KEY_SET = new Set(TOPIC_GROUPS.flatMap((g) => g.keys))
 
@@ -312,6 +327,7 @@ const form = reactive({
   workspace: '..',
   maps_dir: 'maps',
   control: { ...controlDefaults },
+  mapping: { auto_start: false },
   topics: [],
   tasks: { mapping: [], navigation: [] }
 })
@@ -319,6 +335,7 @@ const form = reactive({
 const tabs = computed(() => [
   { id: 'directories', label: '基本目录' },
   { id: 'control', label: '运动安全' },
+  { id: 'mapping', label: '建图控制' },
   { id: 'topics', label: 'ROS 话题', badge: `${form.topics.length}` },
   { id: 'tasks', label: '任务与进程', badge: activeTaskIds.value.length ? `${activeTaskIds.value.length} 运行` : '' }
 ])
@@ -366,6 +383,7 @@ function applyConfig(config) {
     const value = config?.control?.[field]
     form.control[field] = Number.isFinite(value) ? value : controlDefaults[field]
   }
+  form.mapping.auto_start = config?.mapping?.auto_start === true
   const topics = { ...TOPIC_DEFAULTS, ...(config?.topics || {}) }
   form.topics = Object.entries(topics).map(([name, value]) => ({ id: localId(), name, value }))
   for (const taskName of taskNames) {
@@ -510,7 +528,14 @@ function buildPayload() {
     control[field] = value
   }
 
-  return { workspace: form.workspace.trim(), maps_dir: form.maps_dir.trim(), control, topics, tasks }
+  return {
+    workspace: form.workspace.trim(),
+    maps_dir: form.maps_dir.trim(),
+    control,
+    mapping: { auto_start: form.mapping.auto_start === true },
+    topics,
+    tasks
+  }
 }
 
 async function saveConfig() {
@@ -568,6 +593,9 @@ fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .topic-head-actions { display: flex; gap: 8px; }
 .directory-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .control-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.mapping-toggle { display: flex; align-items: center; gap: 10px; width: fit-content; cursor: pointer; }
+.mapping-toggle input { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--accent-primary); }
+.mapping-toggle span { margin: 0; color: var(--text-primary); }
 label { display: block; min-width: 0; color: var(--text-secondary); font-size: var(--text-xs); }
 label > span { display: block; margin-bottom: 7px; }
 input, textarea { width: 100%; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-primary); background: var(--bg-secondary); font-family: var(--font-mono); font-size: var(--text-sm); outline: none; }

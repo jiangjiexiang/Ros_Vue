@@ -14,6 +14,36 @@ export default defineConfig({
             '/api': {
                 target: process.env.BACKEND_URL || 'http://127.0.0.1:3000',
                 changeOrigin: true
+            },
+            '/ws/doglink-indoor': {
+                target: 'ws://127.0.0.1:8770',
+                ws: true,
+                changeOrigin: true,
+                rewrite: () => '/'
+            },
+            '/ws/doglink-warehouse': {
+                target: 'ws://127.0.0.1:8771',
+                ws: true,
+                changeOrigin: true,
+                rewrite: () => '/'
+            },
+            '/ws/doglink-outdoor': {
+                target: 'ws://127.0.0.1:8772',
+                ws: true,
+                changeOrigin: true,
+                rewrite: () => '/'
+            },
+            '/ws/doglink': {
+                target: 'ws://127.0.0.1:8768',
+                ws: true,
+                changeOrigin: true,
+                rewrite: () => '/'
+            },
+            '/ws/foxglove': {
+                target: 'ws://127.0.0.1:8765',
+                ws: true,
+                changeOrigin: true,
+                rewrite: () => '/'
             }
         }
     }

@@ -2,7 +2,7 @@
   ros__parameters:
     feature_extract_enable: false
     point_filter_num: 1
-    max_iteration: 3
+    max_iteration: 5
     filter_size_surf: 0.15
     filter_size_map: 0.15
     cube_side_length: 1000.0
@@ -16,17 +16,17 @@
       time_offset_lidar_to_imu: 0.0
 
     preprocess:
-      lidar_type: 5
+      lidar_type: 2
       scan_line: 16
       scan_rate: 10
       timestamp_unit: 0
       blind: 0.3
 
     mapping:
-      acc_cov: 0.01
-      gyr_cov: 0.01
-      b_acc_cov: 0.0001
-      b_gyr_cov: 0.0001
+      acc_cov: 0.05
+      gyr_cov: 0.02
+      b_acc_cov: 0.00000001
+      b_gyr_cov: 0.00000001
       fov_degree: 360.0
       det_range: 25.0
       extrinsic_est_en: false

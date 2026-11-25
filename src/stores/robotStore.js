@@ -1,22 +1,40 @@
 import { computed, ref } from 'vue'
-import { API_BASE, DEFAULT_WS_URL } from '../config.js'
+import { API_BASE } from '../config.js'
 
 export const ROBOT_STORAGE_KEY = 'robot-console-robots'
 export const ACTIVE_ROBOT_STORAGE_KEY = 'robot-console-active-robot'
 
-function defaultRobot() {
-  return {
-    id: 'robot-1',
-    name: '机器狗 1',
-    url: DEFAULT_WS_URL,
-    namespace: '',
-    transport: 'foxglove',
-    lidarType: '2d',
-    slamAlgorithm: 'slam_toolbox',
-    localizationAlgorithm: 'amcl',
-    algorithmPackage: '',
-    algorithmLaunch: ''
+export const SIMULATION_ROBOT_CONFIGS = [
+  { id: 'robot-isaac-indoor', scene: 'indoor', name: '室内巡检狗 · 3D', port: 8770 },
+  { id: 'robot-isaac-warehouse', scene: 'warehouse', name: '仓库巡检狗 · 3D', port: 8771 },
+  { id: 'robot-isaac-outdoor', scene: 'outdoor', name: '户外巡检狗 · 3D', port: 8772 }
+]
+
+function simulationUrl(port, scene = '') {
+  if (typeof window === 'undefined') return `ws://localhost:${port}`
+  const hostname = window.location?.hostname || 'localhost'
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1'
+  if (!isLocal && scene) {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${wsProto}//${window.location.host}/ws/doglink-${scene}`
   }
+  return `ws://${hostname}:${port}`
+}
+
+function createSimulationRobots() {
+  return SIMULATION_ROBOT_CONFIGS.map((config) => ({
+    id: config.id,
+    name: config.name,
+    url: simulationUrl(config.port, config.scene),
+    namespace: config.scene,
+    transport: 'doglink',
+    lidarType: '3d',
+    slamAlgorithm: 'fast_lio',
+    localizationAlgorithm: 'none',
+    algorithmPackage: 'fast_lio',
+    algorithmLaunch: '',
+    simulationScene: config.scene
+  }))
 }
 
 function normalizeRobotItem(robot) {
@@ -27,17 +45,23 @@ function normalizeRobotItem(robot) {
     : robot.transport === 'doglink'
       ? 'doglink'
       : 'foxglove'
+  const simulationScene = SIMULATION_ROBOT_CONFIGS.some((config) => config.scene === robot.simulationScene)
+    ? robot.simulationScene
+    : ''
+  const simulationConfig = SIMULATION_ROBOT_CONFIGS.find((config) => config.scene === simulationScene)
+  const lidarType = robot.lidarType === '2d' ? '2d' : '3d'
   return {
     id: String(robot.id),
     name: String(robot.name),
-    url: String(robot.url),
+    url: simulationConfig ? simulationUrl(simulationConfig.port, simulationConfig.scene) : String(robot.url),
     namespace: typeof robot.namespace === 'string' ? robot.namespace : '',
     transport,
-    lidarType: robot.lidarType === '3d' ? '3d' : '2d',
-    slamAlgorithm: typeof robot.slamAlgorithm === 'string' && robot.slamAlgorithm ? robot.slamAlgorithm : 'slam_toolbox',
-    localizationAlgorithm: typeof robot.localizationAlgorithm === 'string' && robot.localizationAlgorithm ? robot.localizationAlgorithm : 'amcl',
+    lidarType,
+    slamAlgorithm: typeof robot.slamAlgorithm === 'string' && robot.slamAlgorithm ? robot.slamAlgorithm : (lidarType === '3d' ? 'fast_lio' : 'slam_toolbox'),
+    localizationAlgorithm: typeof robot.localizationAlgorithm === 'string' && robot.localizationAlgorithm ? robot.localizationAlgorithm : (lidarType === '3d' ? 'none' : 'amcl'),
     algorithmPackage: typeof robot.algorithmPackage === 'string' ? robot.algorithmPackage : '',
-    algorithmLaunch: typeof robot.algorithmLaunch === 'string' ? robot.algorithmLaunch : ''
+    algorithmLaunch: typeof robot.algorithmLaunch === 'string' ? robot.algorithmLaunch : '',
+    simulationScene
   }
 }
 
@@ -49,7 +73,7 @@ function loadLocalRobots() {
       if (valid.length) return valid
     }
   } catch {}
-  return [defaultRobot()]
+  return createSimulationRobots()
 }
 
 function loadActiveRobotId(list) {
@@ -143,7 +167,8 @@ function updateRobot(config) {
     slamAlgorithm: config.slamAlgorithm || 'slam_toolbox',
     localizationAlgorithm: config.localizationAlgorithm || 'amcl',
     algorithmPackage: config.algorithmPackage || '',
-    algorithmLaunch: config.algorithmLaunch || ''
+    algorithmLaunch: config.algorithmLaunch || '',
+    simulationScene: robot.simulationScene || ''
   })
   persistRobots()
   return robot
@@ -160,34 +185,17 @@ function removeRobot(id) {
   return wasActive
 }
 
-function ensureSimulationRobot() {
-  const simHost = typeof window !== 'undefined' && window.location?.hostname
-    ? window.location.hostname
-    : 'localhost'
-  const simUrl = `ws://${simHost}:8765`
-  const existing = robots.value.find((robot) => (
-    robot.id === 'robot-isaac-sim' ||
-    robot.name.includes('Isaac') ||
-    robot.name.includes('仿真') ||
-    robot.url === simUrl
-  ))
-  if (existing) return existing
-
-  const created = normalizeRobotItem({
-    id: 'robot-isaac-sim',
-    name: 'Isaac 仿真机器狗',
-    url: simUrl,
-    namespace: '',
-    transport: 'foxglove',
-    lidarType: '2d',
-    slamAlgorithm: 'slam_toolbox',
-    localizationAlgorithm: 'amcl',
-    algorithmPackage: '',
-    algorithmLaunch: ''
-  })
-  robots.value.push(created)
-  persistRobots()
-  return created
+function ensureSimulationRobot(scene = 'indoor') {
+  const defaults = createSimulationRobots()
+  let changed = false
+  for (const robot of defaults) {
+    if (!robots.value.some((item) => item.id === robot.id)) {
+      robots.value.push(robot)
+      changed = true
+    }
+  }
+  if (changed) persistRobots()
+  return robots.value.find((robot) => robot.simulationScene === scene) || defaults[0]
 }
 
 export function useRobotStore() {

@@ -2,10 +2,13 @@
     "workspace": "../ros2_ws",
     "maps_dir": "maps",
     "control": {
-        "max_linear_speed": 5,
+        "max_linear_speed": 1.0,
         "max_angular_speed": 1,
         "command_rate_hz": 20,
         "command_timeout_ms": 600
+    },
+    "mapping": {
+        "auto_start": false
     },
     "tasks": {
         "startup": [
@@ -18,6 +21,9 @@
                     "foxglove_bridge",
                     "foxglove_bridge"
                 ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88"
+                },
                 "delay": 0
             },
             {
@@ -25,8 +31,18 @@
                 "description": "DogLink 自研协议网关",
                 "command": "bash",
                 "args": [
-                    "scripts/start_doglink.sh"
+                    "scripts/start_doglink.sh",
+                    "--ports",
+                    "8770",
+                    "8771",
+                    "8772",
+                    "--node-name",
+                    "doglink_simulation"
                 ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
                 "delay": 0
             }
         ],
@@ -37,7 +53,10 @@
                 "command": "bash",
                 "args": [
                     "scripts/start_simulation.sh",
-                    "indoor"
+                    "indoor",
+                    "--control-port",
+                    "8766",
+                    "--headless"
                 ],
                 "delay": 0
             },
@@ -46,9 +65,58 @@
                 "description": "室内场景 ROS 2 双向桥接",
                 "command": "/usr/bin/python3",
                 "args": [
-                    "simulation/ros2_bridge.py"
+                    "simulation/ros2_bridge.py",
+                    "--ros-args",
+                    "-r",
+                    "__node:=isaac_bridge_indoor",
+                    "-p",
+                    "control_url:=http://127.0.0.1:8766",
+                    "-p",
+                    "topic_namespace:=indoor"
                 ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
                 "delay": 1000
+            },
+            {
+                "id": "simulation_indoor_fastlio",
+                "description": "室内机器狗 FAST-LIO 3D 定位",
+                "command": "ros2",
+                "args": [
+                    "run",
+                    "fast_lio",
+                    "fastlio_mapping",
+                    "--ros-args",
+                    "--params-file",
+                    "config/fastlio_sim.yaml",
+                    "-r",
+                    "__node:=fastlio_indoor",
+                    "-r",
+                    "/points:=/indoor/points",
+                    "-r",
+                    "/imu:=/indoor/imu",
+                    "-r",
+                    "/Odometry:=/indoor/Odometry",
+                    "-r",
+                    "/cloud_registered:=/indoor/cloud_registered",
+                    "-r",
+                    "/path:=/indoor/path",
+                    "-r",
+                    "/tf:=/indoor/tf",
+                    "-r",
+                    "/Laser_map:=/indoor/Laser_map",
+                    "-r",
+                    "/cloud_effected:=/indoor/cloud_effected",
+                    "-r",
+                    "/cloud_registered_body:=/indoor/cloud_registered_body"
+                ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
+                "delay": 22000
             }
         ],
         "simulation_warehouse": [
@@ -58,7 +126,10 @@
                 "command": "bash",
                 "args": [
                     "scripts/start_simulation.sh",
-                    "warehouse"
+                    "warehouse",
+                    "--control-port",
+                    "8767",
+                    "--headless"
                 ],
                 "delay": 0
             },
@@ -67,9 +138,58 @@
                 "description": "仓库场景 ROS 2 双向桥接",
                 "command": "/usr/bin/python3",
                 "args": [
-                    "simulation/ros2_bridge.py"
+                    "simulation/ros2_bridge.py",
+                    "--ros-args",
+                    "-r",
+                    "__node:=isaac_bridge_warehouse",
+                    "-p",
+                    "control_url:=http://127.0.0.1:8767",
+                    "-p",
+                    "topic_namespace:=warehouse"
                 ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
                 "delay": 1000
+            },
+            {
+                "id": "simulation_warehouse_fastlio",
+                "description": "仓库机器狗 FAST-LIO 3D 定位",
+                "command": "ros2",
+                "args": [
+                    "run",
+                    "fast_lio",
+                    "fastlio_mapping",
+                    "--ros-args",
+                    "--params-file",
+                    "config/fastlio_sim.yaml",
+                    "-r",
+                    "__node:=fastlio_warehouse",
+                    "-r",
+                    "/points:=/warehouse/points",
+                    "-r",
+                    "/imu:=/warehouse/imu",
+                    "-r",
+                    "/Odometry:=/warehouse/Odometry",
+                    "-r",
+                    "/cloud_registered:=/warehouse/cloud_registered",
+                    "-r",
+                    "/path:=/warehouse/path",
+                    "-r",
+                    "/tf:=/warehouse/tf",
+                    "-r",
+                    "/Laser_map:=/warehouse/Laser_map",
+                    "-r",
+                    "/cloud_effected:=/warehouse/cloud_effected",
+                    "-r",
+                    "/cloud_registered_body:=/warehouse/cloud_registered_body"
+                ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
+                "delay": 22000
             }
         ],
         "simulation_outdoor": [
@@ -79,7 +199,10 @@
                 "command": "bash",
                 "args": [
                     "scripts/start_simulation.sh",
-                    "outdoor"
+                    "outdoor",
+                    "--control-port",
+                    "8769",
+                    "--headless"
                 ],
                 "delay": 0
             },
@@ -88,9 +211,58 @@
                 "description": "户外场景 ROS 2 双向桥接",
                 "command": "/usr/bin/python3",
                 "args": [
-                    "simulation/ros2_bridge.py"
+                    "simulation/ros2_bridge.py",
+                    "--ros-args",
+                    "-r",
+                    "__node:=isaac_bridge_outdoor",
+                    "-p",
+                    "control_url:=http://127.0.0.1:8769",
+                    "-p",
+                    "topic_namespace:=outdoor"
                 ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
                 "delay": 1000
+            },
+            {
+                "id": "simulation_outdoor_fastlio",
+                "description": "户外机器狗 FAST-LIO 3D 定位",
+                "command": "ros2",
+                "args": [
+                    "run",
+                    "fast_lio",
+                    "fastlio_mapping",
+                    "--ros-args",
+                    "--params-file",
+                    "config/fastlio_sim.yaml",
+                    "-r",
+                    "__node:=fastlio_outdoor",
+                    "-r",
+                    "/points:=/outdoor/points",
+                    "-r",
+                    "/imu:=/outdoor/imu",
+                    "-r",
+                    "/Odometry:=/outdoor/Odometry",
+                    "-r",
+                    "/cloud_registered:=/outdoor/cloud_registered",
+                    "-r",
+                    "/path:=/outdoor/path",
+                    "-r",
+                    "/tf:=/outdoor/tf",
+                    "-r",
+                    "/Laser_map:=/outdoor/Laser_map",
+                    "-r",
+                    "/cloud_effected:=/outdoor/cloud_effected",
+                    "-r",
+                    "/cloud_registered_body:=/outdoor/cloud_registered_body"
+                ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88",
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                },
+                "delay": 22000
             }
         ],
         "mapping": [
@@ -106,6 +278,9 @@
                     "--params-file",
                     "config/fastlio_sim.yaml"
                 ],
+                "env": {
+                    "ROS_DOMAIN_ID": "88"
+                },
                 "delay": 0
             }
         ],
@@ -122,7 +297,6 @@
     },
     "topics": {
         "camera_primary": "/camera1/preview/compressed",
-        "camera_secondary": "/camera2/preview/compressed",
         "cmd_vel": "/cmd_vel",
         "battery": "/battery",
         "map": "/map",
@@ -137,6 +311,9 @@
         "pointcloud": "/points",
         "registered_cloud": "/cloud_registered",
         "fastlio_odom": "/Odometry",
-        "fastlio_path": "/path"
+        "fastlio_path": "/path",
+        "localization": "/localization",
+        "localization_path": "/localization/path",
+        "global_map": "/global_map"
     }
 }

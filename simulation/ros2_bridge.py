@@ -1,16 +1,16 @@
 import json
 import math
 import os
-import sys
+import struct
 import time
 import urllib.request
-from array import array
 from pathlib import Path
 
 import rclpy
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -33,18 +33,23 @@ class IsaacPlatformBridge(Node):
     def __init__(self):
         super().__init__("isaac_platform_bridge")
         self.declare_parameter("control_url", "http://127.0.0.1:8766")
+        self.declare_parameter("topic_namespace", "")
         self.control_url = self.get_parameter("control_url").value.rstrip("/")
+        topic_namespace = self.get_parameter("topic_namespace").value.strip("/")
         configured_topics = load_topics()
+
+        def namespaced(topic):
+            return f"/{topic_namespace}/{topic.lstrip('/')}" if topic_namespace else topic
+
         self.topics = {
-            "cmd_vel": configured_topics.get("cmd_vel", "/cmd_vel"),
-            "odom": configured_topics.get("odom", "/odom"),
-            "imu": configured_topics.get("imu", "/imu"),
-            "scan": configured_topics.get("scan", "/scan"),
-            "pointcloud": configured_topics.get("pointcloud", "/points"),
-            "battery": configured_topics.get("battery", "/battery"),
-            "tf": configured_topics.get("tf", "/tf"),
-            "camera_primary": configured_topics.get("camera_primary", "/camera1/preview/compressed"),
-            "camera_secondary": configured_topics.get("camera_secondary", "/camera2/preview/compressed"),
+            "cmd_vel": namespaced(configured_topics.get("cmd_vel", "/cmd_vel")),
+            "odom": namespaced(configured_topics.get("odom", "/odom")),
+            "imu": namespaced(configured_topics.get("imu", "/imu")),
+            "scan": namespaced(configured_topics.get("scan", "/scan")),
+            "pointcloud": namespaced(configured_topics.get("pointcloud", "/points")),
+            "battery": namespaced(configured_topics.get("battery", "/battery")),
+            "tf": namespaced(configured_topics.get("tf", "/tf")),
+            "camera_primary": namespaced(configured_topics.get("camera_primary", "/camera1/preview/compressed")),
         }
         self.connected = False
         self.last_error_log = 0.0
@@ -53,6 +58,8 @@ class IsaacPlatformBridge(Node):
         self.battery_ticks = 0
         self.prev_world_vel = None
         self.prev_imu_time = None
+        self.prev_sim_steps = None
+        self.smooth_acc_world = (0.0, 0.0, 9.81)
 
         self.odom_publisher = self.create_publisher(Odometry, self.topics["odom"], 10)
         self.imu_publisher = self.create_publisher(Imu, self.topics["imu"], 10)
@@ -63,8 +70,9 @@ class IsaacPlatformBridge(Node):
         self.battery_publisher = self.create_publisher(UInt16, self.topics["battery"], 10)
         self.tf_publisher = self.create_publisher(TFMessage, self.topics["tf"], 10)
         self.camera_publishers = {
-            name: self.create_publisher(CompressedImage, self.topics[f"camera_{name}"], qos_profile_sensor_data)
-            for name in ("primary", "secondary")
+            "primary": self.create_publisher(
+                CompressedImage, self.topics["camera_primary"], qos_profile_sensor_data
+            )
         }
         self.status_cb_group = MutuallyExclusiveCallbackGroup()
         self.camera_cb_group = MutuallyExclusiveCallbackGroup()
@@ -135,20 +143,27 @@ class IsaacPlatformBridge(Node):
             points = data["points"]
             if not points:
                 return
-            coordinates = array(
-                "f",
-                (
-                    val
-                    for point in points
-                    for val in (point[0], point[1], point[2], 100.0)
-                ),
-            )
-            is_dense = all(math.isfinite(coordinate) for coordinate in coordinates)
-            if sys.byteorder != "little":
-                coordinates.byteswap()
+            point_step = 24
+            coordinates = bytearray(len(points) * point_step)
+            for index, point in enumerate(points):
+                if len(point) < 5:
+                    raise ValueError("仿真点云缺少 ring/time 字段")
+                struct.pack_into(
+                    "<ffffH2xf",
+                    coordinates,
+                    index * point_step,
+                    point[0],
+                    point[1],
+                    point[2],
+                    100.0,
+                    int(point[3]),
+                    point[4],
+                )
+            is_dense = all(math.isfinite(value) for point in points for value in point[:3])
 
             message = PointCloud2()
-            message.header.stamp = self.get_clock().now().to_msg()
+            scan_period = float(data.get("scan_period", 0.1))
+            message.header.stamp = (self.get_clock().now() - Duration(seconds=scan_period)).to_msg()
             message.header.frame_id = data.get("frame_id", "base_scan")
             message.height = 1
             message.width = len(points)
@@ -157,12 +172,14 @@ class IsaacPlatformBridge(Node):
                 PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
                 PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
                 PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
+                PointField(name="ring", offset=16, datatype=PointField.UINT16, count=1),
+                PointField(name="time", offset=20, datatype=PointField.FLOAT32, count=1),
             ]
             message.is_bigendian = False
-            message.point_step = 16
+            message.point_step = point_step
             message.row_step = message.point_step * message.width
             message.is_dense = is_dense
-            message.data = coordinates.tobytes()
+            message.data = coordinates
             self.pointcloud_publisher.publish(message)
         except Exception as err:
             now = time.monotonic()
@@ -190,7 +207,7 @@ class IsaacPlatformBridge(Node):
 
         self.publish_tf(stamp, position, quaternion)
         self.publish_odometry(stamp, position, quaternion, velocity, yaw)
-        self.publish_imu(stamp, quaternion, velocity)
+        self.publish_imu(stamp, quaternion, velocity, data.get("steps"))
         self.publish_scan(stamp, data.get("scan", []), data.get("lidar", {}))
         self.battery_ticks += 1
         if self.battery_ticks % 20 == 0:
@@ -248,7 +265,7 @@ class IsaacPlatformBridge(Node):
         message.twist.twist.angular.z = velocity["angular"]["z"]
         self.odom_publisher.publish(message)
 
-    def publish_imu(self, stamp, quaternion, velocity):
+    def publish_imu(self, stamp, quaternion, velocity, sim_steps=None):
         message = Imu()
         message.header.stamp = stamp
         message.header.frame_id = "base_link"
@@ -260,10 +277,7 @@ class IsaacPlatformBridge(Node):
         message.orientation.x = qx
         message.orientation.y = qy
         message.orientation.z = qz
-        # Rotate world angular velocity and world gravity (0, 0, +9.81) into body frame via R(q*)
-        wx = float(velocity["angular"]["x"])
-        wy = float(velocity["angular"]["y"])
-        wz = float(velocity["angular"]["z"])
+
         r00 = 1.0 - 2.0 * (qy * qy + qz * qz)
         r01 = 2.0 * (qx * qy + qw * qz)
         r02 = 2.0 * (qx * qz - qw * qy)
@@ -273,13 +287,45 @@ class IsaacPlatformBridge(Node):
         r20 = 2.0 * (qx * qz + qw * qy)
         r21 = 2.0 * (qy * qz - qw * qx)
         r22 = 1.0 - 2.0 * (qx * qx + qy * qy)
-        message.angular_velocity.x = r00 * wx + r01 * wy + r02 * wz
-        message.angular_velocity.y = r10 * wx + r11 * wy + r12 * wz
-        message.angular_velocity.z = r20 * wx + r21 * wy + r22 * wz
-        g = 9.81
-        message.linear_acceleration.x = r02 * g
-        message.linear_acceleration.y = r12 * g
-        message.linear_acceleration.z = r22 * g
+
+        def world_to_body(x, y, z):
+            return (
+                r00 * x + r10 * y + r20 * z,
+                r01 * x + r11 * y + r21 * z,
+                r02 * x + r12 * y + r22 * z,
+            )
+
+        angular = velocity["angular"]
+        angular_x, angular_y, angular_z = world_to_body(
+            float(angular["x"]), float(angular["y"]), float(angular["z"])
+        )
+        message.angular_velocity.x = angular_x
+        message.angular_velocity.y = angular_y
+        message.angular_velocity.z = angular_z
+
+        linear = velocity["linear"]
+        world_velocity = (float(linear["x"]), float(linear["y"]), float(linear["z"]))
+        if sim_steps is not None and self.prev_sim_steps is not None and sim_steps > self.prev_sim_steps and self.prev_world_vel is not None:
+            dt = (sim_steps - self.prev_sim_steps) / 200.0
+            if 0.005 < dt < 0.5:
+                raw_ax = max(-40.0, min(40.0, (world_velocity[0] - self.prev_world_vel[0]) / dt))
+                raw_ay = max(-40.0, min(40.0, (world_velocity[1] - self.prev_world_vel[1]) / dt))
+                raw_az = max(-20.0, min(40.0, 9.81 + (world_velocity[2] - self.prev_world_vel[2]) / dt))
+                self.smooth_acc_world = (raw_ax, raw_ay, raw_az)
+        if sim_steps is None or self.prev_sim_steps is None or sim_steps != self.prev_sim_steps:
+            self.prev_world_vel = world_velocity
+            self.prev_sim_steps = sim_steps
+        world_acceleration = (
+            self.smooth_acc_world[0],
+            self.smooth_acc_world[1],
+            self.smooth_acc_world[2] - 9.81,
+        )
+        specific_force = world_to_body(
+            world_acceleration[0], world_acceleration[1], world_acceleration[2] + 9.81
+        )
+        message.linear_acceleration.x = specific_force[0]
+        message.linear_acceleration.y = specific_force[1]
+        message.linear_acceleration.z = specific_force[2]
         self.imu_publisher.publish(message)
 
     def publish_scan(self, stamp, ranges, lidar):
@@ -312,7 +358,8 @@ def main():
     finally:
         executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -5,13 +5,13 @@
         <h2>GPU 仿真测试</h2>
         <p>Isaac Sim · Unitree Go2 · RTX 物理仿真</p>
       </div>
-      <span class="simulation-state" :class="{ active: activeScene }">
-        {{ activeScene ? sceneName(activeScene) + '运行中' : '仿真待机' }}
+      <span class="simulation-state" :class="{ active: activeScenes.length }">
+        {{ activeScenes.length ? `${activeScenes.length} / 3 条狗运行中` : '仿真待机' }}
       </span>
     </div>
 
     <div class="scene-grid">
-      <article v-for="scene in scenes" :key="scene.id" class="scene-card" :class="{ active: activeScene === scene.id }">
+      <article v-for="scene in scenes" :key="scene.id" class="scene-card" :class="{ active: isSceneRunning(scene.id) }">
         <div class="scene-icon"><UiIcon :name="scene.icon" :size="24" /></div>
         <div class="scene-copy">
           <h3>{{ scene.name }}</h3>
@@ -19,17 +19,30 @@
           <div class="scene-tags"><span v-for="tag in scene.tags" :key="tag">{{ tag }}</span></div>
         </div>
         <button
-          v-if="activeScene !== scene.id"
+          v-if="!isSceneRunning(scene.id)"
           class="btn btn-connect"
           :disabled="Boolean(loadingScene)"
           @click="startScene(scene.id)"
         >
           <UiIcon name="play" :size="15" />
-          {{ loadingScene === scene.id ? '正在启动…' : activeScene ? '切换至此场景' : '启动场景' }}
+          {{ loadingScene === scene.id ? '正在启动…' : '启动机器狗' }}
         </button>
-        <button v-else class="btn btn-disconnect" :disabled="Boolean(loadingScene)" @click="stopScene">
+        <button
+          v-else-if="activeScene !== scene.id"
+          class="btn btn-secondary"
+          :disabled="Boolean(loadingScene)"
+          @click="activeScene = scene.id"
+        >
+          查看遥测与控制
+        </button>
+        <button
+          v-if="isSceneRunning(scene.id)"
+          class="btn btn-disconnect"
+          :disabled="Boolean(loadingScene)"
+          @click="stopScene(scene.id)"
+        >
           <UiIcon name="stop" :size="15" />
-          {{ loadingScene === scene.id ? '正在停止…' : '停止场景' }}
+          {{ loadingScene === scene.id ? '正在停止…' : '停止机器狗' }}
         </button>
       </article>
     </div>
@@ -44,15 +57,15 @@
         @stop="stopMotion"
       />
       <section class="card telemetry-card">
-        <div class="card-header"><span><UiIcon name="activity" :size="17" />仿真遥测</span><small>GUI + WEB</small></div>
+        <div class="card-header"><span><UiIcon name="activity" :size="17" />仿真遥测</span><small>PHYSICS + WEB</small></div>
         <div class="telemetry-body">
           <div><span>场景</span><strong>{{ sceneName(activeScene) }}</strong></div>
           <div><span>位置 X / Y</span><strong>{{ telemetry.position.x.toFixed(2) }} / {{ telemetry.position.y.toFixed(2) }} m</strong></div>
           <div><span>朝向</span><strong>{{ telemetry.yaw.toFixed(2) }} rad</strong></div>
           <div><span>线速度</span><strong>{{ telemetry.command.linearX.toFixed(2) }} m/s</strong></div>
           <div><span>角速度</span><strong>{{ telemetry.command.angularZ.toFixed(2) }} rad/s</strong></div>
-          <div><span>虚拟雷达</span><strong>{{ lidarText }}</strong></div>
-          <p>提供 2D 激光（360 束 / 12 m）与 16 线 3D 点云（/points，20 m）及双路机载/观察相机，用于建图、点云和工作台联调。</p>
+          <div><span>3D 雷达</span><strong>{{ lidarText }}</strong></div>
+          <p>每条狗独立提供 16 线 3D 点云、IMU 及机载相机，可按需开启 FAST-LIO 建图。</p>
           <p>拖动左侧摇杆控制 Go2。松开摇杆或点击“停止运动”即停车；控制指令超过 {{ controlConfig.command_timeout_ms ?? 600 }} 毫秒未更新也会自动停车。</p>
         </div>
       </section>
@@ -60,7 +73,7 @@
 
     <div class="simulation-note">
       <UiIcon name="activity" :size="16" />
-      <span>场景在本机 Isaac Sim 图形窗口中显示。ROS 2 桥接同步发布 /odom、/tf、/scan、/points、/imu、/battery 及双路压缩相机流，并订阅 /cmd_vel。</span>
+      <span>三个场景可同时运行，分别使用 indoor / warehouse / outdoor 话题命名空间及 DogLink 端口 8770 / 8771 / 8772，遥测与速度指令互不混用。</span>
     </div>
     <div v-if="controlError" class="error-message mt-2">{{ controlError }}</div>
     <div v-if="errorMsg" class="error-message mt-2">{{ errorMsg }}</div>
@@ -86,6 +99,7 @@ const scenes = [
 ]
 
 const activeScene = ref('')
+const activeScenes = ref([])
 const loadingScene = ref('')
 const errorMsg = ref('')
 const controlError = ref('')
@@ -99,12 +113,20 @@ let telemetryTimer = null
 let commandPending = false
 
 const lidarText = computed(() => {
-  const lidar = telemetry.value.lidar
-  return lidar ? `${lidar.beams} 束 / ${lidar.range_max} m` : '360 束 / 12 m'
+  const pointcloud = telemetry.value.pointcloud
+  return pointcloud ? `${pointcloud.channels} 线 / ${pointcloud.range_max} m` : '16 线 / 20 m'
 })
 
 function sceneName(id) {
   return scenes.find((scene) => scene.id === id)?.name || ''
+}
+
+function isSceneRunning(id) {
+  return activeScenes.value.includes(id)
+}
+
+function sceneQuery(id) {
+  return `?scene=${encodeURIComponent(id)}`
 }
 
 async function request(path) {
@@ -120,7 +142,10 @@ async function checkStatus() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return (await res.json()).isRunning ? scene.id : ''
     }))
-    activeScene.value = statuses.find(Boolean) || ''
+    activeScenes.value = statuses.filter(Boolean)
+    if (!activeScenes.value.includes(activeScene.value)) {
+      activeScene.value = activeScenes.value[0] || ''
+    }
   } catch (err) {
     console.error('获取仿真状态失败:', err)
   }
@@ -129,7 +154,7 @@ async function checkStatus() {
 async function updateTelemetry() {
   if (!activeScene.value) return
   try {
-    const res = await fetch(`${API_BASE}/simulation/status`)
+    const res = await fetch(`${API_BASE}/simulation/status${sceneQuery(activeScene.value)}`)
     if (!res.ok) return
     const data = await res.json()
     if (data.ready) {
@@ -143,7 +168,7 @@ async function sendVelocity({ linearX, angularZ }) {
   if (!activeScene.value || commandPending) return
   commandPending = true
   try {
-    const res = await fetch(`${API_BASE}/simulation/velocity`, {
+    const res = await fetch(`${API_BASE}/simulation/velocity${sceneQuery(activeScene.value)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ linearX, angularZ })
@@ -166,10 +191,8 @@ async function startScene(id) {
   loadingScene.value = id
   errorMsg.value = ''
   try {
-    if (activeScene.value && activeScene.value !== id) {
-      await request(`/stop_task/simulation_${activeScene.value}`)
-    }
     await request(`/run_task/simulation_${id}`)
+    if (!activeScenes.value.includes(id)) activeScenes.value.push(id)
     activeScene.value = id
   } catch (err) {
     errorMsg.value = err.message || '无法启动仿真场景'
@@ -178,13 +201,15 @@ async function startScene(id) {
   }
 }
 
-async function stopScene() {
-  if (!activeScene.value) return
-  loadingScene.value = activeScene.value
+async function stopScene(id) {
+  if (!isSceneRunning(id)) return
+  loadingScene.value = id
   errorMsg.value = ''
   try {
-    await request(`/stop_task/simulation_${activeScene.value}`)
-    activeScene.value = ''
+    if (activeScene.value === id) await sendVelocity({ linearX: 0, angularZ: 0 })
+    await request(`/stop_task/simulation_${id}`)
+    activeScenes.value = activeScenes.value.filter((scene) => scene !== id)
+    if (activeScene.value === id) activeScene.value = activeScenes.value[0] || ''
   } catch (err) {
     errorMsg.value = err.message || '无法停止仿真场景'
   } finally {

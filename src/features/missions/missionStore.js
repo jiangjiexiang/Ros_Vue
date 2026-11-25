@@ -2,10 +2,8 @@ import { ref } from 'vue'
 import { API_BASE } from '../../config.js'
 import { useInspectionStore } from '../../stores/inspectionStore.js'
 import { showToast } from '../../stores/toastStore.js'
-import { createDemoMissions } from './missionDemo.js'
 import {
   ACTIVE_MISSION_STATUSES,
-  DEMO_NAVIGATION_SECONDS,
   cloneData,
   createId,
   createRunState,
@@ -15,17 +13,23 @@ import {
 
 export const MISSION_STORAGE_KEY = 'robot-console-inspection-missions-v1'
 
+function normalizeStoredMissions(items) {
+  return items
+    .filter((mission) => !mission?.isDemo && !String(mission?.id || '').startsWith('demo-'))
+    .map((mission) => normalizeMission(mission))
+}
+
 function loadMissions() {
   try {
     const stored = globalThis.localStorage?.getItem(MISSION_STORAGE_KEY)
     if (stored != null) {
       const parsed = JSON.parse(stored)
-      if (Array.isArray(parsed)) return parsed.map((mission) => normalizeMission(mission))
+      if (Array.isArray(parsed)) return normalizeStoredMissions(parsed)
     }
   } catch (error) {
-    console.warn('读取本地巡检任务失败，已加载内置任务。', error)
+    console.warn('读取本地巡检任务失败，已使用空任务列表。', error)
   }
-  return createDemoMissions()
+  return []
 }
 
 const missions = ref(loadMissions())
@@ -61,8 +65,8 @@ async function initMissionsFromServer() {
     const res = await fetch(`${API_BASE}/missions`)
     if (!res.ok) return
     const data = await res.json()
-    if (data.hasData && Array.isArray(data.items) && data.items.length > 0) {
-      missions.value = data.items.map((mission) => normalizeMission(mission))
+    if (data.hasData && Array.isArray(data.items)) {
+      missions.value = normalizeStoredMissions(data.items)
       try {
         globalThis.localStorage?.setItem(MISSION_STORAGE_KEY, JSON.stringify(missions.value))
       } catch {}
@@ -212,7 +216,7 @@ function completeCurrentWaypointNavigation(id, detail = '已到达目标点，�
   return true
 }
 
-function tickMission(id, { waitForRosArrival = false, onTimeout } = {}) {
+function tickMission(id, { onTimeout } = {}) {
   const mission = findMission(id)
   if (!mission || mission.status !== 'running' || !mission.waypoints.length) return
 
@@ -228,24 +232,12 @@ function tickMission(id, { waitForRosArrival = false, onTimeout } = {}) {
   run.elapsedSeconds += 1
 
   if (run.phase === 'navigating') {
-    if (waitForRosArrival) {
-      const timeoutSeconds = Math.max(5, Number(mission.navigation?.navigationTimeoutSeconds || 90))
-      if (run.elapsedSeconds >= timeoutSeconds) {
-        if (onTimeout) onTimeout(mission, waypoint)
-        else abortMission(id, `前往“${waypoint.name}”导航超时（>${timeoutSeconds}s），任务已中止。`)
-        return
-      }
-      persistMissions()
+    const timeoutSeconds = Math.max(5, Number(mission.navigation?.navigationTimeoutSeconds || 90))
+    if (run.elapsedSeconds >= timeoutSeconds) {
+      if (onTimeout) onTimeout(mission, waypoint)
+      else abortMission(id, `前往“${waypoint.name}”导航超时（>${timeoutSeconds}s），任务已中止。`)
       return
     }
-
-    if (run.elapsedSeconds < DEMO_NAVIGATION_SECONDS) {
-      persistMissions()
-      return
-    }
-    run.phase = 'inspecting'
-    run.elapsedSeconds = 0
-    appendRunLog(mission, `已到达“${waypoint.name}”，开始执行巡检动作。`)
     persistMissions()
     return
   }

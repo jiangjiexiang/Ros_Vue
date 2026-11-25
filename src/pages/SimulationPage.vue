@@ -21,7 +21,7 @@
     <section class="card sim-health-card">
       <div class="card-header">
         <span><UiIcon name="link" :size="17" />ROS 2 仿真话题健康检查</span>
-        <small>{{ isConnected ? `已发现 ${topics.length} 个通道` : '未连接 Foxglove / ROS Bridge' }}</small>
+        <small>{{ isConnected ? `已发现 ${topics.length} 个通道` : '未连接当前场景 DogLink' }}</small>
       </div>
       <div class="topic-health-grid">
         <div
@@ -44,10 +44,14 @@
           <select v-model="selectedLogId" class="log-task-select" aria-label="选择进程日志" @change="fetchLogs">
             <option value="simulation_indoor">simulation_indoor（室内仿真）</option>
             <option value="simulation_indoor_ros">simulation_indoor_ros（室内桥接）</option>
+            <option value="simulation_indoor_fastlio">simulation_indoor_fastlio（室内 FAST-LIO）</option>
+            <option value="doglink">doglink（三狗统一网关）</option>
             <option value="simulation_warehouse">simulation_warehouse（仓库仿真）</option>
             <option value="simulation_warehouse_ros">simulation_warehouse_ros（仓库桥接）</option>
+            <option value="simulation_warehouse_fastlio">simulation_warehouse_fastlio（仓库 FAST-LIO）</option>
             <option value="simulation_outdoor">simulation_outdoor（户外仿真）</option>
             <option value="simulation_outdoor_ros">simulation_outdoor_ros（户外桥接）</option>
+            <option value="simulation_outdoor_fastlio">simulation_outdoor_fastlio（户外 FAST-LIO）</option>
           </select>
           <button type="button" class="btn btn-secondary refresh-log-btn" @click="fetchLogs">
             <UiIcon name="refresh" :size="14" />刷新
@@ -72,7 +76,7 @@ import { useRosSessionStore } from '../stores/rosSessionStore.js'
 import { showToast } from '../stores/toastStore.js'
 
 const router = useRouter()
-const { ensureSimulationRobot } = useRobotStore()
+const { ensureSimulationRobot, activeRobot } = useRobotStore()
 const { controlConfig } = useRuntimeConfigStore()
 const { isConnected, topics, robotTopics, switchRobot } = useRosSessionStore()
 
@@ -80,16 +84,20 @@ const activeScene = ref('')
 const selectedLogId = ref('simulation_indoor')
 const logs = ref([])
 
-const expectedSimTopics = computed(() => [
-  { label: '里程计', topic: robotTopics.value.odom || '/odom' },
-  { label: '2D 激光', topic: robotTopics.value.scan || '/scan' },
-  { label: '3D 点云', topic: robotTopics.value.pointcloud || '/points' },
-  { label: 'IMU', topic: robotTopics.value.imu || '/imu' },
-  { label: 'TF 坐标', topic: robotTopics.value.tf || '/tf' },
-  { label: '电量', topic: robotTopics.value.battery || '/battery' },
-  { label: '机载主相机', topic: robotTopics.value.camera_primary || '/camera1/preview/compressed' },
-  { label: '场景副相机', topic: robotTopics.value.camera_secondary || '/camera2/preview/compressed' }
-])
+const expectedSimTopics = computed(() => {
+  const items = [
+    { label: '里程计', topic: robotTopics.value.odom || '/odom' },
+    { label: '3D 点云', topic: robotTopics.value.pointcloud || '/points' },
+    { label: 'IMU', topic: robotTopics.value.imu || '/imu' },
+    { label: 'TF 坐标', topic: robotTopics.value.tf || '/tf' },
+    { label: '电量', topic: robotTopics.value.battery || '/battery' },
+    { label: '机载主相机', topic: robotTopics.value.camera_primary || '/camera1/preview/compressed' }
+  ]
+  if (activeRobot.value?.lidarType !== '3d') {
+    items.splice(1, 0, { label: '2D 激光', topic: robotTopics.value.scan || '/scan' })
+  }
+  return items
+})
 
 const liveTopicSet = computed(() => new Set((topics.value || []).map((c) => c.topic)))
 const formattedLogs = computed(() => (
@@ -108,7 +116,7 @@ async function fetchLogs() {
 }
 
 function connectSimulationWorkspace() {
-  const simRobot = ensureSimulationRobot()
+  const simRobot = ensureSimulationRobot(activeScene.value || 'indoor')
   switchRobot(simRobot, { reconnect: true })
   showToast(`已切换至「${simRobot.name}」并尝试连接`, 'success')
   router.push('/inspection')

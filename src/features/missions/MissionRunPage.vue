@@ -4,7 +4,7 @@
       <div class="mission-heading">
         <span class="mission-eyebrow">MISSION EXECUTION</span>
         <h1>{{ mission?.name || '任务执行' }}</h1>
-        <p>支持真实 ROS 导航下发与离线模拟演练，实时查看相机画面、点位进度与状态日志。</p>
+        <p>通过真实 ROS 导航下发巡检目标，实时查看相机画面、点位进度与状态日志。</p>
       </div>
       <div class="mission-header-actions">
         <button class="mission-button" @click="goBack">← 返回列表</button>
@@ -88,7 +88,7 @@
                   <span v-if="mission.run.phase === 'inspecting'" class="mono">
                     {{ Math.min(mission.run.elapsedSeconds, waypoint.dwellSeconds) }} / {{ waypoint.dwellSeconds }} s
                   </span>
-                  <span v-else-if="runMode === 'ros' && remainingDistance !== null" class="mono">
+                  <span v-else-if="remainingDistance !== null" class="mono">
                     剩余 {{ remainingDistance.toFixed(2) }} m
                   </span>
                 </div>
@@ -116,26 +116,6 @@
               <span class="mono">{{ isConnected ? `${linearSpeed} m/s` : '离线' }}</span>
             </div>
             <div class="panel-body run-controls">
-              <div class="mode-switch" role="group" aria-label="执行模式选择">
-                <button
-                  type="button"
-                  :class="{ active: runMode === 'ros' }"
-                  :disabled="isActive || !isConnected"
-                  :title="isConnected ? '向机器狗下发真实 /goal_pose' : '请先连接机器狗'"
-                  @click="runMode = 'ros'"
-                >
-                  真实 ROS 下发
-                </button>
-                <button
-                  type="button"
-                  :class="{ active: runMode === 'demo' }"
-                  :disabled="isActive"
-                  @click="runMode = 'demo'"
-                >
-                  离线模拟演练
-                </button>
-              </div>
-
               <div class="overall-progress">
                 <div><strong>{{ progress.percent }}%</strong><span>{{ progress.completed }} / {{ progress.total }} 点次</span></div>
                 <div class="progress-track" role="progressbar" :aria-valuenow="progress.percent" aria-valuemin="0" aria-valuemax="100">
@@ -162,7 +142,7 @@
                 </button>
 
                 <button
-                  v-if="runMode === 'ros' && mission.status === 'running' && mission.run.phase === 'navigating'"
+                  v-if="mission.status === 'running' && mission.run.phase === 'navigating'"
                   class="mission-button"
                   @click="confirmArrived"
                 >
@@ -174,9 +154,7 @@
                 </button>
               </div>
               <p class="control-note">
-                {{ runMode === 'ros'
-                  ? `真实模式：自动发送 /goal_pose，到达容差 ${mission.navigation.goalTolerance} m 内或手动确认后进入点位动作。`
-                  : `模拟模式：导航阶段固定计时 ${DEMO_NAVIGATION_SECONDS} 秒，动作阶段按点位停留时间倒计时。` }}
+                自动发送 /goal_pose，到达容差 {{ mission.navigation.goalTolerance }} m 内或手动确认后进入点位动作。
               </p>
             </div>
           </section>
@@ -227,7 +205,6 @@ import { useRosSessionStore } from '../../stores/rosSessionStore.js'
 import { useInspectionStore } from '../../stores/inspectionStore.js'
 import { confirmDialog, showToast } from '../../stores/toastStore.js'
 import {
-  DEMO_NAVIGATION_SECONDS,
   getActionLabel,
   getFailureLabel,
   getMissionProgress
@@ -265,7 +242,6 @@ const {
 const { pushRuntimeAlert } = useInspectionStore()
 
 const errorMessage = ref('')
-const runMode = ref(isConnected.value ? 'ros' : 'demo')
 let timer = null
 let lastDispatchedKey = ''
 
@@ -301,7 +277,7 @@ const phaseText = computed(() => {
 })
 
 function dispatchCurrentGoalIfNeeded() {
-  if (runMode.value !== 'ros' || !isConnected.value) return
+  if (!isConnected.value) return
   if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
   const wp = currentWaypoint.value
   if (!wp) return
@@ -314,8 +290,8 @@ function dispatchCurrentGoalIfNeeded() {
 
 async function startExecution() {
   errorMessage.value = ''
-  if (runMode.value === 'ros' && !isConnected.value) {
-    errorMessage.value = '当前机器狗未连接，无法使用真实 ROS 执行；请先连接或切换至离线模拟演练。'
+  if (!isConnected.value) {
+    errorMessage.value = '当前机器狗未连接，无法执行真实 ROS 任务，请先连接机器狗。'
     return
   }
   if (['completed', 'aborted'].includes(mission.value?.status)) {
@@ -420,18 +396,12 @@ watch(routeMissionId, () => {
   lastDispatchedKey = ''
 })
 
-watch(isConnected, (connected) => {
-  if (!isActive.value) {
-    runMode.value = connected ? 'ros' : 'demo'
-  }
-})
-
 watch(() => [mission.value?.status, mission.value?.run?.phase, mission.value?.run?.currentWaypointIndex], () => {
   dispatchCurrentGoalIfNeeded()
 })
 
 watch(remainingDistance, (dist) => {
-  if (runMode.value !== 'ros' || dist === null) return
+  if (dist === null) return
   if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
   if (mission.value.run.elapsedSeconds < 2) return
   const tolerance = Math.max(0.1, Number(mission.value.navigation?.goalTolerance || 0.25))
@@ -445,7 +415,6 @@ onMounted(() => {
   timer = window.setInterval(() => {
     if (mission.value?.status === 'running') {
       tickMission(mission.value.id, {
-        waitForRosArrival: runMode.value === 'ros',
         onTimeout: (m, wp) => {
           pushRuntimeAlert({
             dedupeKey: `nav-timeout-${m.id}-${wp.id}`,
@@ -481,15 +450,6 @@ onUnmounted(() => {
 .summary-item > small { color: var(--text-muted); font-size: var(--text-xs); }
 .run-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.8fr); align-items: start; gap: 16px; }
 .run-sidebar { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.mode-switch {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
-  border: 1px solid var(--border-color); border-radius: 8px; background: rgba(2, 8, 18, 0.35);
-}
-.mode-switch button {
-  height: 32px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent;
-  font-size: var(--text-xs); cursor: pointer;
-}
-.mode-switch button.active { color: var(--accent-primary); background: var(--bg-elevated); font-weight: 600; }
 .point-timeline { padding: 17px; }
 .run-point { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
 .timeline-marker { display: flex; flex-direction: column; align-items: center; }

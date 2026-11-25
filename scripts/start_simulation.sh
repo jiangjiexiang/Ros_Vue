@@ -5,6 +5,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${ISAACLAB_PYTHON:-/home/zju/miniconda3/envs/env_isaaclab/bin/python}"
 SCENE="${1:-indoor}"
 export DISPLAY="${DISPLAY:-:0}"
+PYTHON_HOME="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"
+if [[ -f "$PYTHON_HOME/lib/libstdc++.so.6" ]]; then
+    export LD_PRELOAD="$PYTHON_HOME/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
 
 if [[ ! "$SCENE" =~ ^(indoor|warehouse|outdoor)$ ]]; then
     echo "用法: bash scripts/start_simulation.sh [indoor|warehouse|outdoor] [其他 Isaac Sim 参数]"

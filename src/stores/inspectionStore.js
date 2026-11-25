@@ -1,27 +1,9 @@
 import { computed, ref } from 'vue'
 import { API_BASE } from '../config.js'
-import { createDemoAlerts } from '../features/alerts/demoData.js'
 import { currentDateTime } from '../features/alerts/utils.js'
-import { demoRecords } from '../features/records/demoData.js'
 
-const DEMO_MODE_KEY = 'robot-console-demo-mode'
-
-function loadDemoMode() {
-  try {
-    const saved = localStorage.getItem(DEMO_MODE_KEY)
-    if (saved === 'false') return false
-    if (saved === 'true') return true
-  } catch {}
-  return true
-}
-
-function cloneItems(list) {
-  return JSON.parse(JSON.stringify(list))
-}
-
-const demoMode = ref(loadDemoMode())
-const alerts = ref(demoMode.value ? createDemoAlerts() : [])
-const records = ref(demoMode.value ? cloneItems(demoRecords) : [])
+const alerts = ref([])
+const records = ref([])
 const alertsLoaded = ref(false)
 const recordsLoaded = ref(false)
 const recentRuntimeAlertTimes = new Map()
@@ -48,23 +30,6 @@ function persistRecords() {
   return persistCollection('records', records.value)
 }
 
-function setDemoMode(enabled) {
-  demoMode.value = Boolean(enabled)
-  try {
-    localStorage.setItem(DEMO_MODE_KEY, String(demoMode.value))
-  } catch {}
-  if (demoMode.value) {
-    if (!alerts.value.length) {
-      alerts.value = createDemoAlerts()
-      persistAlerts()
-    }
-    if (!records.value.length) {
-      records.value = cloneItems(demoRecords)
-      persistRecords()
-    }
-  }
-}
-
 async function initInspectionStore() {
   if (alertsLoaded.value && recordsLoaded.value) return
   await Promise.all([
@@ -81,7 +46,7 @@ async function initInspectionStore() {
           }
         }
       } catch {}
-      alerts.value = demoMode.value ? createDemoAlerts() : []
+      alerts.value = []
       alertsLoaded.value = true
     })(),
     (async () => {
@@ -97,7 +62,7 @@ async function initInspectionStore() {
           }
         }
       } catch {}
-      records.value = demoMode.value ? cloneItems(demoRecords) : []
+      records.value = []
       recordsLoaded.value = true
     })()
   ])
@@ -273,13 +238,11 @@ function archiveMissionRecord(mission) {
 
 export function useInspectionStore() {
   return {
-    demoMode,
     alerts,
     records,
     alertsLoaded,
     recordsLoaded,
     unhandledAlertCount,
-    setDemoMode,
     initInspectionStore,
     acknowledgeAlert,
     bulkAcknowledgeAlerts,

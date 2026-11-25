@@ -13,10 +13,13 @@ const MAX_TASK_LOG_LINES = 200;
 const app = express();
 const activeProcesses = new Map();
 const taskLogs = new Map();
-const simulationControlUrl = process.env.SIMULATION_CONTROL_URL || 'http://127.0.0.1:8766';
+const simulationControlUrls = {
+    indoor: process.env.SIMULATION_CONTROL_URL_INDOOR || process.env.SIMULATION_CONTROL_URL || 'http://127.0.0.1:8766',
+    warehouse: process.env.SIMULATION_CONTROL_URL_WAREHOUSE || 'http://127.0.0.1:8767',
+    outdoor: process.env.SIMULATION_CONTROL_URL_OUTDOOR || 'http://127.0.0.1:8769'
+};
 const defaultCameraTopics = {
-    camera_primary: '/camera1/preview/compressed',
-    camera_secondary: '/camera2/preview/compressed'
+    camera_primary: '/camera1/preview/compressed'
 };
 const defaultControlConfig = {
     max_linear_speed: 5,
@@ -24,6 +27,7 @@ const defaultControlConfig = {
     command_rate_hz: 10,
     command_timeout_ms: 600
 };
+const defaultMappingConfig = { auto_start: false };
 const controlConfigRules = {
     max_linear_speed: { min: 0.1, max: 5, integer: false },
     max_angular_speed: { min: 0.1, max: 3, integer: false },
@@ -80,6 +84,14 @@ function runtimeControl(control) {
     ]));
 }
 
+function runtimeMapping(mapping) {
+    return {
+        auto_start: isRecord(mapping) && typeof mapping.auto_start === 'boolean'
+            ? mapping.auto_start
+            : defaultMappingConfig.auto_start
+    };
+}
+
 function runtimeConfig(config) {
     const source = isRecord(config) ? config : {};
     const sourceTopics = isRecord(source.topics) ? source.topics : {};
@@ -90,6 +102,7 @@ function runtimeConfig(config) {
         workspace: typeof source.workspace === 'string' && source.workspace ? source.workspace : '..',
         maps_dir: typeof source.maps_dir === 'string' && source.maps_dir ? source.maps_dir : 'maps',
         control: runtimeControl(source.control),
+        mapping: runtimeMapping(source.mapping),
         tasks: {
             mapping: runtimeTasks(source.tasks?.mapping),
             navigation: runtimeTasks(source.tasks?.navigation)
@@ -99,7 +112,7 @@ function runtimeConfig(config) {
 
 function validateRuntimeConfig(body) {
     if (!isRecord(body)) return '请求正文必须是 JSON 对象';
-    const allowedFields = new Set(['topics', 'workspace', 'maps_dir', 'control', 'tasks']);
+    const allowedFields = new Set(['topics', 'workspace', 'maps_dir', 'control', 'mapping', 'tasks']);
     const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
     if (unknownFields.length) return `包含不支持的配置字段：${unknownFields.join('、')}`;
 
@@ -132,6 +145,15 @@ function validateRuntimeConfig(body) {
             if (!isValidControlValue(value, rule)) {
                 return `${field} 必须是 ${rule.min}～${rule.max} 范围内的${rule.integer ? '整数' : '数值'}`;
             }
+        }
+    }
+
+    if (body.mapping !== undefined) {
+        if (!isRecord(body.mapping)) return 'mapping 必须是对象';
+        const unknownMappingFields = Object.keys(body.mapping).filter((key) => key !== 'auto_start');
+        if (unknownMappingFields.length) return `mapping 包含不支持字段：${unknownMappingFields.join('、')}`;
+        if (body.mapping.auto_start !== undefined && typeof body.mapping.auto_start !== 'boolean') {
+            return 'mapping.auto_start 必须是布尔值';
         }
     }
 
@@ -310,7 +332,7 @@ function appendTaskLog(taskId, stream, chunk) {
     taskLogs.set(taskId, list);
 }
 
-function runRos(command, args, config, detached = true, taskId = null) {
+function runRos(command, args, config, detached = true, taskId = null, environment = {}) {
     const script = [
         'set -e',
         'source /opt/ros/humble/setup.bash',
@@ -319,9 +341,15 @@ function runRos(command, args, config, detached = true, taskId = null) {
         'exec "$@"'
     ].join('\n');
 
+    const env = { ...process.env };
+    for (const [name, value] of Object.entries(environment || {})) {
+        if (value === null || value === undefined) delete env[name];
+        else env[name] = String(value);
+    }
     const proc = spawn('bash', ['-c', script, 'ros2-task', workspaceSetup(config), command, ...args], {
         detached,
-        stdio: taskId ? ['ignore', 'pipe', 'pipe'] : 'inherit'
+        stdio: taskId ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+        env
     });
 
     if (taskId) {
@@ -348,7 +376,7 @@ function startTask(task, config, extraArgs = []) {
         stream: 'system',
         line: `启动任务: ${task.command} ${args.join(' ')}`.trim()
     }]);
-    const proc = runRos(task.command, args, config, true, task.id);
+    const proc = runRos(task.command, args, config, true, task.id, task.env);
     activeProcesses.set(task.id, proc);
 
     proc.once('error', (err) => {
@@ -443,6 +471,9 @@ app.put('/api/runtime_config', (req, res) => {
     if (req.body.control !== undefined) {
         updatedConfig.control = runtimeControl({ ...currentConfig.control, ...req.body.control });
     }
+    if (req.body.mapping !== undefined) {
+        updatedConfig.mapping = runtimeMapping({ ...currentConfig.mapping, ...req.body.mapping });
+    }
     if (req.body.tasks !== undefined) {
         const currentTasks = isRecord(currentConfig.tasks) ? currentConfig.tasks : {};
         updatedConfig.tasks = { ...currentTasks };
@@ -466,8 +497,13 @@ app.put('/api/runtime_config', (req, res) => {
     }
 });
 
-async function simulationRequest(path, options = {}) {
-    const response = await fetch(`${simulationControlUrl}${path}`, {
+function simulationScene(req) {
+    const scene = req.query.scene || req.body?.scene || 'indoor';
+    return Object.hasOwn(simulationControlUrls, scene) ? scene : null;
+}
+
+async function simulationRequest(scene, path, options = {}) {
+    const response = await fetch(`${simulationControlUrls[scene]}${path}`, {
         ...options,
         signal: AbortSignal.timeout(1500)
     });
@@ -477,14 +513,18 @@ async function simulationRequest(path, options = {}) {
 }
 
 app.get('/api/simulation/status', async (req, res) => {
+    const scene = simulationScene(req);
+    if (!scene) return res.status(400).json({ ready: false, error: '未知的仿真场景' });
     try {
-        res.json(await simulationRequest('/status'));
+        res.json(await simulationRequest(scene, '/status'));
     } catch (err) {
-        res.status(503).json({ ready: false, error: '仿真控制服务未连接' });
+        res.status(503).json({ ready: false, scene, error: '仿真控制服务未连接' });
     }
 });
 
 app.post('/api/simulation/velocity', async (req, res) => {
+    const scene = simulationScene(req);
+    if (!scene) return res.status(400).json({ success: false, error: '未知的仿真场景' });
     const { linearX, angularZ } = req.body || {};
     const control = runtimeControl(loadConfig().control);
     if (typeof linearX !== 'number' || !Number.isFinite(linearX) || Math.abs(linearX) > control.max_linear_speed ||
@@ -495,20 +535,30 @@ app.post('/api/simulation/velocity', async (req, res) => {
         });
     }
     try {
-        const data = await simulationRequest('/velocity', {
+        const data = await simulationRequest(scene, '/velocity', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ linearX, angularZ })
         });
         res.json(data);
     } catch (err) {
-        res.status(503).json({ success: false, error: '仿真控制服务未连接，请先启动场景' });
+        res.status(503).json({ success: false, scene, error: '仿真控制服务未连接，请先启动场景' });
     }
 });
 
+function isFastlioTask(task) {
+    return task.id.endsWith('_fastlio') || task.id.includes('fastlio');
+}
+
+function sceneStartupTasks(taskName, tasks, config) {
+    if (!taskName.startsWith('simulation_')) return tasks;
+    const autoStartMapping = runtimeMapping(config.mapping).auto_start;
+    return tasks.filter((task) => autoStartMapping || !isFastlioTask(task));
+}
+
 app.post('/api/run_task/:taskName', (req, res) => {
     const config = loadConfig();
-    const tasks = config.tasks?.[req.params.taskName] || [];
+    const tasks = sceneStartupTasks(req.params.taskName, config.tasks?.[req.params.taskName] || [], config);
     if (tasks.length === 0) {
         return res.status(404).json({ success: false, error: '任务未定义或为空' });
     }
@@ -519,17 +569,135 @@ app.post('/api/run_task/:taskName', (req, res) => {
 app.post('/api/stop_task/:taskName', (req, res) => {
     const config = loadConfig();
     stopTasks(config.tasks?.[req.params.taskName] || []);
+    if (req.params.taskName.startsWith('simulation_')) {
+        stopTasks(resolveLocalizationTasks(config, req.params.taskName.replace('simulation_', '')));
+    }
     res.json({ success: true });
 });
 
 app.get('/api/task_status/:taskName', (req, res) => {
-    const tasks = loadConfig().tasks?.[req.params.taskName] || [];
+    const config = loadConfig();
+    const tasks = sceneStartupTasks(req.params.taskName, config.tasks?.[req.params.taskName] || [], config);
     res.json({ isRunning: tasks.some((task) => activeProcesses.has(task.id)) });
 });
 
-app.post('/api/start_mapping', (req, res) => res.redirect(307, '/api/run_task/mapping'));
-app.post('/api/stop_mapping', (req, res) => res.redirect(307, '/api/stop_task/mapping'));
-app.get('/api/mapping_status', (req, res) => res.redirect(301, '/api/task_status/mapping'));
+function resolveMappingTasks(config, scene) {
+    const clean = typeof scene === 'string' ? scene.trim().replace(/^\/+|\/+$/g, '') : '';
+    if (clean === 'indoor' || clean === 'warehouse' || clean === 'outdoor') {
+        const simTasks = config.tasks?.[`simulation_${clean}`] || [];
+        const fastlio = simTasks
+            .filter(isFastlioTask)
+            .map((task) => ({ ...task, delay: 0 }));
+        if (fastlio.length > 0) return fastlio;
+    }
+    return config.tasks?.mapping || [];
+}
+
+function resolveLocalizationTasks(config, scene, mapPath = '') {
+    const clean = typeof scene === 'string' ? scene.trim().replace(/^\/+|\/+$/g, '') : '';
+    if (!['indoor', 'warehouse', 'outdoor'].includes(clean)) return [];
+    const fastlio = resolveMappingTasks(config, clean).map((task) => ({
+        ...task,
+        id: task.id.replace('_fastlio', '_localization_fastlio'),
+        description: task.description.replace('建图', '定位')
+    }));
+    const localization = {
+        id: `simulation_${clean}_localization`,
+        description: `${clean} 保存地图全局定位`,
+        command: '/usr/bin/python3',
+        args: [
+            'simulation/fastlio_localization.py', '--ros-args',
+            '-r', `__node:=localization_${clean}`,
+            '-p', `map_file:=${mapPath}`,
+            '-p', `topic_namespace:=${clean}`
+        ],
+        env: { ROS_DOMAIN_ID: '88', FASTRTPS_DEFAULT_PROFILES_FILE: null },
+        delay: 500
+    };
+    const navigation = {
+        id: `simulation_${clean}_navigation`,
+        description: `${clean} 点击目标自动导航`,
+        command: '/usr/bin/python3',
+        args: [
+            'simulation/click_navigation.py', '--ros-args',
+            '-r', `__node:=navigation_${clean}`,
+            '-p', `map_file:=${mapPath}`,
+            '-p', `topic_namespace:=${clean}`
+        ],
+        env: { ROS_DOMAIN_ID: '88', FASTRTPS_DEFAULT_PROFILES_FILE: null },
+        delay: 800
+    };
+    return [...fastlio, localization, navigation];
+}
+
+function localizationMapPath(config, value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const directory = path.resolve(mapsDir(config));
+    const selected = path.isAbsolute(value) ? path.normalize(value) : path.resolve(directory, value);
+    const withExtension = selected.endsWith('.pcd') ? selected : `${selected}.pcd`;
+    if (!withExtension.startsWith(`${directory}${path.sep}`) || !fs.existsSync(withExtension)) return null;
+    return withExtension;
+}
+
+app.post('/api/start_localization', (req, res) => {
+    const config = loadConfig();
+    const scene = req.body?.scene || req.query?.scene || '';
+    const mapPath = localizationMapPath(config, req.body?.mapPath);
+    if (!mapPath) return res.status(400).json({ success: false, error: '请选择地图目录中存在的 PCD 地图' });
+    const tasks = resolveLocalizationTasks(config, scene, mapPath);
+    if (tasks.length < 2) return res.status(404).json({ success: false, error: '当前场景不支持独立定位' });
+    stopTasks(resolveMappingTasks(config, scene));
+    stopTasks(tasks);
+    startTasks(tasks, config);
+    res.json({ success: true, mapPath });
+});
+
+app.post('/api/stop_localization', (req, res) => {
+    const config = loadConfig();
+    stopTasks(resolveLocalizationTasks(config, req.body?.scene || req.query?.scene));
+    res.json({ success: true });
+});
+
+app.get('/api/localization_status', (req, res) => {
+    const config = loadConfig();
+    const scene = req.query?.scene || '';
+    const tasks = resolveLocalizationTasks(config, scene);
+    const nodeId = `simulation_${scene}_localization`;
+    res.json({ isRunning: tasks.some((task) => task.id === nodeId && activeProcesses.has(nodeId)) });
+});
+
+app.post('/api/start_mapping', (req, res) => {
+    const config = loadConfig();
+    const scene = req.body?.scene || req.query?.scene;
+    const tasks = resolveMappingTasks(config, scene);
+    if (tasks.length === 0) return res.status(404).json({ success: false, error: '建图任务未定义或为空' });
+    stopTasks(resolveLocalizationTasks(config, scene));
+    startTasks(tasks, config);
+    res.json({ success: true });
+});
+
+app.post('/api/stop_mapping', (req, res) => {
+    const config = loadConfig();
+    const tasks = resolveMappingTasks(config, req.body?.scene || req.query?.scene);
+    stopTasks(tasks);
+    res.json({ success: true });
+});
+
+app.post('/api/restart_mapping', (req, res) => {
+    const config = loadConfig();
+    const tasks = resolveMappingTasks(config, req.body?.scene || req.query?.scene);
+    if (tasks.length === 0) return res.status(404).json({ success: false, error: '建图任务未定义或为空' });
+    stopTasks(tasks);
+    setTimeout(() => {
+        startTasks(tasks, config);
+    }, 800);
+    res.json({ success: true });
+});
+
+app.get('/api/mapping_status', (req, res) => {
+    const tasks = resolveMappingTasks(loadConfig(), req.query?.scene);
+    res.json({ isRunning: tasks.some((task) => activeProcesses.has(task.id)) });
+});
 app.post('/api/stop_navigation', (req, res) => res.redirect(307, '/api/stop_task/navigation'));
 app.get('/api/navigation_status', (req, res) => res.redirect(301, '/api/task_status/navigation'));
 
