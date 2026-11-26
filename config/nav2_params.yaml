@@ -154,6 +154,21 @@ controller_server:
       max_angular_accel: 2.2
       max_robot_pose_search_dist: 5.0
 
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [1.0, 0.0, 1.0]
+    min_velocity: [-1.0, 0.0, -1.0]
+    max_accel: [1.8, 0.0, 5.0]
+    max_decel: [-2.4, 0.0, -6.0]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 0.5
+
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -179,8 +194,8 @@ local_costmap:
         mark_threshold: 0
         observation_sources: points
         points:
-          topic: points
-          min_obstacle_height: 0.48
+          topic: points_obstacles
+          min_obstacle_height: 0.03
           max_obstacle_height: 1.8
           clearing: true
           marking: true
@@ -222,8 +237,8 @@ global_costmap:
         mark_threshold: 0
         observation_sources: points
         points:
-          topic: points
-          min_obstacle_height: 0.48
+          topic: points_obstacles
+          min_obstacle_height: 0.03
           max_obstacle_height: 1.8
           clearing: true
           marking: true

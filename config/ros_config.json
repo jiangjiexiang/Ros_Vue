@@ -41,7 +41,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 0
             }
@@ -76,7 +77,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 1000
             },
@@ -114,7 +116,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 22000
             }
@@ -149,7 +152,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 1000
             },
@@ -187,7 +191,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 22000
             }
@@ -222,7 +227,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 1000
             },
@@ -260,7 +266,8 @@
                 ],
                 "env": {
                     "ROS_DOMAIN_ID": "88",
-                    "FASTRTPS_DEFAULT_PROFILES_FILE": null
+                    "FASTRTPS_DEFAULT_PROFILES_FILE": null,
+                    "ROS_LOCALHOST_ONLY": "1"
                 },
                 "delay": 22000
             }

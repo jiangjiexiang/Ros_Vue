@@ -89,7 +89,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import { confirmDialog, showToast } from '../stores/toastStore.js'
 
 const props = defineProps({
@@ -426,7 +426,7 @@ async function loadMap(name) {
   loading.value = true
   errorMsg.value = ''
   try {
-    const res = await fetch(`${API_BASE}/maps/${encodeURIComponent(name)}/content`)
+    const res = await apiFetch(`${API_BASE}/maps/${encodeURIComponent(name)}/content`)
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || '地图读取失败')
     width.value = data.width
@@ -490,7 +490,7 @@ async function saveMap(saveAs, customNewName = '') {
   try {
     const body = { width: width.value, height: height.value, pixels: encodePixels() }
     if (saveAs) body.newName = customNewName
-    const res = await fetch(`${API_BASE}/maps/${encodeURIComponent(currentName.value)}/content`, {
+    const res = await apiFetch(`${API_BASE}/maps/${encodeURIComponent(currentName.value)}/content`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)

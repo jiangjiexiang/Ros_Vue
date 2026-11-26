@@ -36,8 +36,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { API_BASE } from '../config.js'
+import { computed, onMounted, ref, watch } from 'vue'
+import { API_BASE, apiFetch } from '../config.js'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
@@ -53,7 +53,6 @@ const isLocalizing = ref(props.isLocalizing)
 const loadingMaps = ref(false)
 const busy = ref(false)
 const errorMsg = ref('')
-let statusTimer = null
 
 const pose = computed(() => {
   const position = props.message?.pose?.pose?.position
@@ -72,7 +71,7 @@ const pose = computed(() => {
 const namespacedTopic = computed(() => props.simulationScene ? `/${props.simulationScene}/localization` : '/localization')
 
 async function request(path, options) {
-  const response = await fetch(`${API_BASE}${path}`, options)
+  const response = await apiFetch(`${API_BASE}${path}`, options)
   const data = await response.json()
   if (!response.ok || data.success === false) throw new Error(data.error || `HTTP ${response.status}`)
   return data
@@ -89,15 +88,6 @@ async function loadMaps() {
   } finally {
     loadingMaps.value = false
   }
-}
-
-async function checkStatus() {
-  try {
-    const query = props.simulationScene ? `?scene=${encodeURIComponent(props.simulationScene)}` : ''
-    const data = await request(`/localization_status${query}`)
-    isLocalizing.value = data.isRunning
-    emit('update:isLocalizing', data.isRunning)
-  } catch {}
 }
 
 async function startLocalization() {
@@ -140,10 +130,7 @@ async function stopLocalization() {
 watch(() => props.isLocalizing, (value) => { isLocalizing.value = value })
 onMounted(() => {
   loadMaps()
-  checkStatus()
-  statusTimer = setInterval(checkStatus, 3000)
 })
-onUnmounted(() => { if (statusTimer) clearInterval(statusTimer) })
 </script>
 
 <style scoped>

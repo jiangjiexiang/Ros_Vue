@@ -1,70 +1,146 @@
 import { computed, ref } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import { currentDateTime } from '../features/alerts/utils.js'
+import { cloneCollection, collectionConflictError, collectionsEqual, mergeCollectionById } from './collectionSync.js'
+import { showToast } from './toastStore.js'
 
 const alerts = ref([])
 const records = ref([])
 const alertsLoaded = ref(false)
 const recordsLoaded = ref(false)
+const alertsVersion = ref(0)
+const recordsVersion = ref(0)
+const storageError = ref('')
 const recentRuntimeAlertTimes = new Map()
 
 const unhandledAlertCount = computed(() => (
   alerts.value.filter((alert) => alert.status !== 'resolved').length
 ))
 
-async function persistCollection(collection, items) {
+const collections = {
+  alerts: { items: alerts, loaded: alertsLoaded, version: alertsVersion, base: null, revision: 0, saveQueue: Promise.resolve(), label: '告警' },
+  records: { items: records, loaded: recordsLoaded, version: recordsVersion, base: null, revision: 0, saveQueue: Promise.resolve(), label: '巡检记录' }
+}
+
+function reportStorageError(error) {
+  storageError.value = error.message || '巡检数据保存失败'
+  showToast(storageError.value, 'error')
+}
+
+async function readJsonResponse(res, action) {
   try {
-    await fetch(`${API_BASE}/${collection}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items })
-    })
-  } catch {}
+    return await res.json()
+  } catch {
+    throw new Error(`${action}返回了无效 JSON（HTTP ${res.status}）`)
+  }
 }
 
-function persistAlerts() {
-  return persistCollection('alerts', alerts.value)
+async function putCollection(collection, items, version) {
+  const res = await apiFetch(`${API_BASE}/${collection}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items, version })
+  })
+  const data = await readJsonResponse(res, '保存巡检数据')
+  return { res, data }
 }
 
-function persistRecords() {
-  return persistCollection('records', records.value)
+async function saveCollectionNow(collection) {
+  const state = collections[collection]
+  if (!state.loaded.value || !state.base) throw new Error(`${state.label}尚未完成服务器加载，已取消保存以避免覆盖`)
+  const localSnapshot = cloneCollection(state.items.value)
+  const baseSnapshot = cloneCollection(state.base)
+  const revision = state.revision
+  let payload = localSnapshot
+  let version = state.version.value
+  let merged = null
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { res, data } = await putCollection(collection, payload, version)
+    if (res.status === 409) {
+      if (!Array.isArray(data.items)) throw new Error('409 响应缺少服务器集合，本地修改已保留')
+      const serverItems = cloneCollection(data.items)
+      version = Number.isFinite(Number(data.version)) ? Number(data.version) : version
+      merged = mergeCollectionById(baseSnapshot, localSnapshot, serverItems)
+      if (collectionsEqual(merged.items, serverItems)) {
+        state.base = cloneCollection(serverItems)
+        state.version.value = version
+        if (state.revision === revision) state.items.value = cloneCollection(merged.localItems)
+        if (merged.conflicts.length) throw collectionConflictError(state.label, merged.conflicts)
+        storageError.value = ''
+        return { success: true, version }
+      }
+      payload = merged.items
+      continue
+    }
+    if (!res.ok || data.success === false) {
+      throw new Error(data.error || data.message || `保存${state.label}失败（HTTP ${res.status}）`)
+    }
+    state.base = cloneCollection(payload)
+    if (Number.isFinite(Number(data.version))) state.version.value = Number(data.version)
+    if (merged && state.revision === revision) state.items.value = cloneCollection(merged.localItems)
+    if (merged?.conflicts.length) throw collectionConflictError(state.label, merged.conflicts)
+    storageError.value = ''
+    return data
+  }
+  throw new Error(`${state.label}连续发生版本冲突，本地修改已保留，请稍后重试`)
+}
+
+function persistCollection(collection) {
+  const state = collections[collection]
+  const result = state.saveQueue.catch(() => {}).then(() => saveCollectionNow(collection))
+  state.saveQueue = result
+  return result
+}
+
+async function persistAlerts() {
+  return await persistCollection('alerts')
+}
+
+async function persistRecords() {
+  return await persistCollection('records')
+}
+
+function markCollectionDirty(collection) {
+  collections[collection].revision++
+}
+
+async function loadCollection(collection) {
+  const state = collections[collection]
+  if (state.loaded.value) return
+  try {
+    const res = await apiFetch(`${API_BASE}/${collection}`)
+    const data = await readJsonResponse(res, '加载巡检数据')
+    if (!res.ok) throw new Error(data.error || data.message || `加载巡检数据失败（HTTP ${res.status}）`)
+    if (data.hasData && !Array.isArray(data.items)) throw new Error('服务器巡检数据格式无效')
+    const serverItems = cloneCollection(data.items)
+    const hasDirty = state.base ? !collectionsEqual(state.items.value, state.base) : state.revision > 0
+    if (!hasDirty) {
+      state.items.value = cloneCollection(serverItems)
+      state.base = cloneCollection(serverItems)
+    } else {
+      const merged = mergeCollectionById(state.base || [], state.items.value, serverItems)
+      state.items.value = cloneCollection(merged.localItems)
+      state.base = cloneCollection(serverItems)
+      if (merged.conflicts.length) {
+        storageError.value = collectionConflictError(state.label, merged.conflicts).message
+        showToast(storageError.value, 'error')
+      }
+    }
+    if (Number.isFinite(Number(data.version))) state.version.value = Number(data.version)
+    state.loaded.value = true
+    if (!storageError.value) storageError.value = ''
+  } catch (error) {
+    storageError.value = error.message || '巡检数据加载失败'
+    showToast(storageError.value, 'error')
+  }
 }
 
 async function initInspectionStore() {
   if (alertsLoaded.value && recordsLoaded.value) return
   await Promise.all([
-    (async () => {
-      if (alertsLoaded.value) return
-      try {
-        const res = await fetch(`${API_BASE}/alerts`)
-        if (res.ok) {
-          const data = await res.json()
-          if (data.hasData && Array.isArray(data.items)) {
-            alerts.value = data.items
-            alertsLoaded.value = true
-            return
-          }
-        }
-      } catch {}
-      alerts.value = []
-      alertsLoaded.value = true
-    })(),
-    (async () => {
-      if (recordsLoaded.value) return
-      try {
-        const res = await fetch(`${API_BASE}/records`)
-        if (res.ok) {
-          const data = await res.json()
-          if (data.hasData && Array.isArray(data.items)) {
-            records.value = data.items
-            recordsLoaded.value = true
-            return
-          }
-        }
-      } catch {}
-      records.value = []
-      recordsLoaded.value = true
-    })()
+    loadCollection('alerts'),
+    loadCollection('records')
   ])
 }
 
@@ -76,7 +152,8 @@ function acknowledgeAlert(id) {
     acknowledgedAt: currentDateTime(),
     acknowledgedBy: '值班员'
   })
-  persistAlerts()
+  markCollectionDirty('alerts')
+  void persistAlerts().catch(reportStorageError)
   return alert
 }
 
@@ -93,7 +170,10 @@ function bulkAcknowledgeAlerts() {
       count += 1
     }
   }
-  if (count > 0) persistAlerts()
+  if (count > 0) {
+    markCollectionDirty('alerts')
+    void persistAlerts().catch(reportStorageError)
+  }
   return count
 }
 
@@ -107,7 +187,8 @@ function resolveAlert(id, resolution, note) {
     handledAt: currentDateTime(),
     handledBy: '值班员'
   })
-  persistAlerts()
+  markCollectionDirty('alerts')
+  void persistAlerts().catch(reportStorageError)
   return alert
 }
 
@@ -160,7 +241,8 @@ function pushRuntimeAlert({
   if (alerts.value.length > 500) {
     alerts.value = alerts.value.slice(0, 500)
   }
-  persistAlerts()
+  markCollectionDirty('alerts')
+  void persistAlerts().catch(reportStorageError)
   return alert
 }
 
@@ -232,7 +314,8 @@ function archiveMissionRecord(mission) {
   if (records.value.length > 500) {
     records.value = records.value.slice(0, 500)
   }
-  persistRecords()
+  markCollectionDirty('records')
+  void persistRecords().catch(reportStorageError)
   return record
 }
 
@@ -242,6 +325,9 @@ export function useInspectionStore() {
     records,
     alertsLoaded,
     recordsLoaded,
+    alertsVersion,
+    recordsVersion,
+    storageError,
     unhandledAlertCount,
     initInspectionStore,
     acknowledgeAlert,

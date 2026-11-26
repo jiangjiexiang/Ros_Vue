@@ -57,7 +57,9 @@
             {{ probeResults[robot.id]?.status === 'testing' ? '测试中…' : '测速' }}
           </button>
           <button type="button" class="edit-button" @click="openEditDrawer(robot)">编辑</button>
-          <button type="button" class="delete-button" :disabled="robots.length <= 1" @click="remove(robot)">删除</button>
+          <button type="button" class="delete-button" :disabled="robots.length <= 1 || Boolean(removingId)" @click="remove(robot)">
+            {{ removingId === robot.id ? '删除中…' : '删除' }}
+          </button>
         </div>
       </article>
     </section>
@@ -113,6 +115,20 @@
                 <label>
                   <span>命名空间（可选）</span>
                   <input v-model.trim="form.namespace" placeholder="例如 robot2">
+                </label>
+              </div>
+
+              <div class="form-row-2">
+                <label>
+                  <span>WebSocket 协议</span>
+                  <select v-model="form.protocol">
+                    <option value="ws">ws（HTTP / 局域网）</option>
+                    <option value="wss">wss（HTTPS / 安全代理）</option>
+                  </select>
+                </label>
+                <label>
+                  <span>连接路径（可选）</span>
+                  <input v-model.trim="form.path" placeholder="例如 /ws/doglink-indoor">
                 </label>
               </div>
 
@@ -172,9 +188,9 @@
           </div>
 
           <footer class="drawer-footer">
-            <button type="button" class="btn btn-secondary" @click="closeDrawer">取消</button>
-            <button type="submit" form="robot-drawer-form" class="btn btn-connect">
-              {{ editingId ? '保存修改' : '添加并连接' }}
+            <button type="button" class="btn btn-secondary" :disabled="saving" @click="closeDrawer">取消</button>
+            <button type="submit" form="robot-drawer-form" class="btn btn-connect" :disabled="saving">
+              {{ saving ? '保存中…' : editingId ? '保存修改' : '添加并连接' }}
             </button>
           </footer>
         </aside>
@@ -191,13 +207,19 @@ import { confirmDialog, showToast } from '../stores/toastStore.js'
 const props = defineProps({
   robots: { type: Array, required: true },
   activeRobotId: { type: String, required: true },
-  connectionState: { type: String, default: 'disconnected' }
+  connectionState: { type: String, default: 'disconnected' },
+  onAdd: { type: Function, required: true },
+  onUpdate: { type: Function, required: true },
+  onRemove: { type: Function, required: true }
 })
-const emit = defineEmits(['add', 'update', 'remove', 'switch'])
+const emit = defineEmits(['switch'])
 
 const drawerOpen = ref(false)
 const editingId = ref('')
 const errorMsg = ref('')
+const saving = ref(false)
+const removingId = ref('')
+let pendingRobotId = ''
 const probeResults = reactive({})
 
 const SLAM_ALGORITHMS = {
@@ -250,12 +272,18 @@ function normalizeAlgorithmConfig(robot = {}) {
   }
 }
 
+function defaultSocketProtocol() {
+  return window.location.protocol === 'https:' ? 'wss' : 'ws'
+}
+
 function createDefaultForm() {
   return {
     name: '',
     transport: 'foxglove',
+    protocol: defaultSocketProtocol(),
     host: '',
     port: '8765',
+    path: '',
     namespace: '',
     ...normalizeAlgorithmConfig()
   }
@@ -302,16 +330,20 @@ function changeTransport() {
 function useRealPreset() {
   form.name = '巡检机器狗'
   form.transport = 'doglink'
+  form.protocol = defaultSocketProtocol()
   form.host = ''
   form.port = '8768'
+  form.path = ''
   form.namespace = ''
 }
 
 function useSimulationPreset() {
   form.name = 'Isaac 仿真机器狗'
   form.transport = 'doglink'
+  form.protocol = defaultSocketProtocol()
   form.host = window.location.hostname || 'localhost'
   form.port = '8768'
+  form.path = ''
   form.namespace = ''
 }
 
@@ -326,8 +358,10 @@ function openEditDrawer(robot) {
     editingId.value = robot.id
     form.name = robot.name
     form.transport = robot.transport || 'foxglove'
+    form.protocol = url.protocol === 'wss:' ? 'wss' : 'ws'
     form.host = url.hostname.replace(/^\[|\]$/g, '')
-    form.port = url.port || '8765'
+    form.port = url.port || (form.protocol === 'wss' ? '443' : '80')
+    form.path = `${url.pathname === '/' ? '' : url.pathname}${url.search}${url.hash}`
     form.namespace = robot.namespace || ''
     Object.assign(form, normalizeAlgorithmConfig(robot))
     errorMsg.value = ''
@@ -338,6 +372,7 @@ function openEditDrawer(robot) {
 }
 
 function closeDrawer() {
+  if (saving.value) return
   drawerOpen.value = false
   resetForm()
 }
@@ -345,10 +380,12 @@ function closeDrawer() {
 function resetForm() {
   editingId.value = ''
   errorMsg.value = ''
+  pendingRobotId = ''
   Object.assign(form, createDefaultForm())
 }
 
-function submitForm() {
+async function submitForm() {
+  if (saving.value) return
   errorMsg.value = ''
   normalizeFormAlgorithms()
   const algorithmLaunch = form.algorithmLaunch.trim()
@@ -362,9 +399,18 @@ function submitForm() {
     return
   }
   const host = form.host.includes(':') && !form.host.startsWith('[') ? `[${form.host}]` : form.host
+  const rawPath = form.path.trim()
+  const path = rawPath && !rawPath.startsWith('/') ? `/${rawPath}` : rawPath
+  let socketUrl
+  try {
+    socketUrl = new URL(`${form.protocol}://${host}:${portNumber}${path}`)
+  } catch {
+    errorMsg.value = '请输入有效的 WebSocket 协议、主机、端口和路径'
+    return
+  }
   const config = {
     name: form.name.trim(),
-    url: `ws://${host}:${portNumber}`,
+    url: socketUrl.toString(),
     transport: form.transport,
     namespace: form.namespace.trim().replace(/^\/+|\/+$/g, ''),
     lidarType: form.lidarType,
@@ -373,15 +419,28 @@ function submitForm() {
     algorithmPackage: usesCustomAlgorithm.value ? form.algorithmPackage.trim() : '',
     algorithmLaunch: usesCustomAlgorithm.value ? algorithmLaunch : ''
   }
-  if (editingId.value) emit('update', { ...config, id: editingId.value })
-  else emit('add', config)
-  closeDrawer()
+  saving.value = true
+  try {
+    if (editingId.value) {
+      await props.onUpdate({ ...config, id: editingId.value })
+    } else {
+      pendingRobotId ||= globalThis.crypto?.randomUUID?.() || `robot-${Date.now()}`
+      await props.onAdd({ ...config, id: pendingRobotId })
+    }
+    saving.value = false
+    closeDrawer()
+  } catch (error) {
+    errorMsg.value = error.message || '保存机器狗配置失败，请重试'
+  } finally {
+    saving.value = false
+  }
 }
 
 function displayAddress(value) {
   try {
     const url = new URL(value)
-    return `${url.hostname}:${url.port || '8765'}`
+    const port = url.port || (url.protocol === 'wss:' ? '443' : '80')
+    return `${url.hostname}:${port}${url.pathname === '/' ? '' : url.pathname}${url.search}`
   } catch {
     return value
   }
@@ -424,8 +483,16 @@ async function remove(robot) {
     danger: true
   })
   if (!confirmed) return
-  if (editingId.value === robot.id) closeDrawer()
-  emit('remove', robot.id)
+  removingId.value = robot.id
+  try {
+    const removed = await props.onRemove(robot.id)
+    if (!removed) throw new Error('机器狗配置未删除')
+    if (editingId.value === robot.id) closeDrawer()
+  } catch (error) {
+    showToast(error.message || '删除机器狗配置失败', 'error')
+  } finally {
+    removingId.value = ''
+  }
 }
 
 function onKeyDown(e) {

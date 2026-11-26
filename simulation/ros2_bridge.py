@@ -1,7 +1,9 @@
+import fcntl
 import json
 import math
 import os
 import struct
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -10,13 +12,38 @@ import rclpy
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.duration import Duration
+from rclpy.clock import Clock, ClockType
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
+from rosgraph_msgs.msg import Clock as ClockMessage
 from sensor_msgs.msg import CompressedImage, Imu, LaserScan, PointCloud2, PointField
 from std_msgs.msg import UInt16
 from tf2_msgs.msg import TFMessage
+
+
+def world_to_body(quaternion, vector):
+    qw = float(quaternion["w"])
+    qx = float(quaternion["x"])
+    qy = float(quaternion["y"])
+    qz = float(quaternion["z"])
+    norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+    if norm < 1e-12:
+        return tuple(float(value) for value in vector)
+    qw, qx, qy, qz = qw / norm, qx / norm, qy / norm, qz / norm
+    x, y, z = (float(value) for value in vector)
+    return (
+        (1.0 - 2.0 * (qy * qy + qz * qz)) * x
+        + 2.0 * (qx * qy + qw * qz) * y
+        + 2.0 * (qx * qz - qw * qy) * z,
+        2.0 * (qx * qy - qw * qz) * x
+        + (1.0 - 2.0 * (qx * qx + qz * qz)) * y
+        + 2.0 * (qy * qz + qw * qx) * z,
+        2.0 * (qx * qz + qw * qy) * x
+        + 2.0 * (qy * qz - qw * qx) * y
+        + (1.0 - 2.0 * (qx * qx + qy * qy)) * z,
+    )
 
 
 def load_topics():
@@ -29,12 +56,34 @@ def load_topics():
         return {}
 
 
+def acquire_sim_clock_lock():
+    domain = int(os.environ.get("ROS_DOMAIN_ID", "0"))
+    lock_dir = Path(os.environ.get("ROS_VUE_CLOCK_LOCK_DIR", "/tmp"))
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_dir / f"ros_vue_sim_clock_{domain}.lock", "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        lock_file.close()
+        raise RuntimeError(
+            f"ROS_DOMAIN_ID={domain} 已有仿真时钟发布者；不支持多场景共享 /clock，"
+            "请改用不同 ROS_DOMAIN_ID 或统一使用 use_sim_time:=false"
+        ) from error
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
 class IsaacPlatformBridge(Node):
     def __init__(self):
         super().__init__("isaac_platform_bridge")
         self.declare_parameter("control_url", "http://127.0.0.1:8766")
         self.declare_parameter("topic_namespace", "")
         self.control_url = self.get_parameter("control_url").value.rstrip("/")
+        self.use_sim_time = bool(self.get_parameter("use_sim_time").value)
+        self.sim_clock_lock = acquire_sim_clock_lock() if self.use_sim_time else None
         topic_namespace = self.get_parameter("topic_namespace").value.strip("/")
         configured_topics = load_topics()
 
@@ -47,6 +96,9 @@ class IsaacPlatformBridge(Node):
             "imu": namespaced(configured_topics.get("imu", "/imu")),
             "scan": namespaced(configured_topics.get("scan", "/scan")),
             "pointcloud": namespaced(configured_topics.get("pointcloud", "/points")),
+            "obstacle_pointcloud": namespaced(
+                configured_topics.get("obstacle_pointcloud", "/points_obstacles")
+            ),
             "battery": namespaced(configured_topics.get("battery", "/battery")),
             "tf": namespaced(configured_topics.get("tf", "/tf")),
             "camera_primary": namespaced(configured_topics.get("camera_primary", "/camera1/preview/compressed")),
@@ -64,6 +116,11 @@ class IsaacPlatformBridge(Node):
         self.prev_imu_time = None
         self.prev_sim_steps = None
         self.smooth_acc_world = (0.0, 0.0, 9.81)
+        self.command_condition = threading.Condition()
+        self.pending_command = None
+        self.pending_zero = None
+        self.latest_command_sequence = 0
+        self.command_running = True
 
         self.odom_publisher = self.create_publisher(Odometry, self.topics["odom"], 10)
         self.imu_publisher = self.create_publisher(Imu, self.topics["imu"], 10)
@@ -71,6 +128,10 @@ class IsaacPlatformBridge(Node):
         self.pointcloud_publisher = self.create_publisher(
             PointCloud2, self.topics["pointcloud"], qos_profile_sensor_data
         )
+        self.obstacle_pointcloud_publisher = self.create_publisher(
+            PointCloud2, self.topics["obstacle_pointcloud"], qos_profile_sensor_data
+        )
+        self.clock_publisher = self.create_publisher(ClockMessage, "/clock", 10)
         self.battery_publisher = self.create_publisher(UInt16, self.topics["battery"], 10)
         self.tf_publisher = self.create_publisher(TFMessage, self.topics["tf"], 10)
         self.camera_publishers = {
@@ -82,10 +143,23 @@ class IsaacPlatformBridge(Node):
         self.camera_cb_group = MutuallyExclusiveCallbackGroup()
         self.cloud_cb_group = MutuallyExclusiveCallbackGroup()
         self.cmd_subscription = self.create_subscription(Twist, self.topics["cmd_vel"], self.on_cmd_vel, 10)
-        self.status_timer = self.create_timer(0.02, self.publish_simulation_state, callback_group=self.status_cb_group)
-        self.camera_timer = self.create_timer(1.0 / 30.0, self.publish_camera_frames, callback_group=self.camera_cb_group)
-        self.pointcloud_timer = self.create_timer(0.1, self.publish_pointcloud, callback_group=self.cloud_cb_group)
-        self.get_logger().info(f"Isaac ROS 2 桥接已启动，控制服务: {self.control_url}")
+        io_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self.status_timer = self.create_timer(
+            0.02, self.publish_simulation_state, callback_group=self.status_cb_group, clock=io_clock
+        )
+        self.camera_timer = self.create_timer(
+            1.0 / 30.0, self.publish_camera_frames, callback_group=self.camera_cb_group, clock=io_clock
+        )
+        self.pointcloud_timer = self.create_timer(
+            0.1, self.publish_pointcloud, callback_group=self.cloud_cb_group, clock=io_clock
+        )
+        self.command_worker = threading.Thread(target=self.command_loop, daemon=True)
+        self.zero_worker = threading.Thread(target=self.zero_command_loop, daemon=True)
+        self.command_worker.start()
+        self.zero_worker.start()
+        self.get_logger().info(
+            f"Isaac ROS 2 桥接已启动，控制服务: {self.control_url}，use_sim_time={self.use_sim_time}"
+        )
 
     def request(self, path, payload=None, timeout=0.25):
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -104,17 +178,86 @@ class IsaacPlatformBridge(Node):
             if response.headers.get_content_type() != "image/jpeg":
                 raise ValueError("相机接口未返回 JPEG")
             frame_id = response.headers.get("X-Frame-Id", f"camera_{name}_optical_frame")
-            return response.read(), frame_id
+            sample_time = response.headers.get("X-Sample-Time")
+            wall_time = response.headers.get("X-Wall-Time")
+            data = {}
+            if sample_time is not None:
+                data["sim_time"] = float(sample_time)
+            if wall_time is not None:
+                data["wall_time"] = float(wall_time)
+            return response.read(), frame_id, data
 
     def on_cmd_vel(self, message):
+        with self.command_condition:
+            sequence = max(time.monotonic_ns(), self.latest_command_sequence + 1)
+            command = (sequence, float(message.linear.x), float(message.angular.z))
+            self.latest_command_sequence = sequence
+            self.pending_command = command
+            if command[1] == 0.0 and command[2] == 0.0:
+                self.pending_zero = command
+            else:
+                self.pending_zero = None
+            self.command_condition.notify_all()
+
+    def take_command(self, zero_only):
+        with self.command_condition:
+            while self.command_running:
+                pending = self.pending_zero if zero_only else self.pending_command
+                if pending is not None:
+                    if zero_only:
+                        self.pending_zero = None
+                    else:
+                        self.pending_command = None
+                    if pending[0] == self.latest_command_sequence:
+                        return pending
+                self.command_condition.wait(timeout=0.2)
+        return None
+
+    def send_command(self, command):
+        sequence, linear_x, angular_z = command
         try:
             self.request(
                 "/velocity",
-                {"linearX": message.linear.x, "angularZ": message.angular.z},
+                {"linearX": linear_x, "angularZ": angular_z, "sequence": sequence},
                 timeout=0.2,
             )
         except Exception as err:
             self.log_connection_error(f"发送速度指令失败: {err}")
+
+    def command_loop(self):
+        while self.command_running:
+            command = self.take_command(zero_only=False)
+            if command is None:
+                continue
+            if command[1] == 0.0 and command[2] == 0.0:
+                continue
+            self.send_command(command)
+
+    def zero_command_loop(self):
+        while self.command_running:
+            command = self.take_command(zero_only=True)
+            if command is not None:
+                self.send_command(command)
+
+    def message_stamp(self, data):
+        if self.use_sim_time:
+            if "sim_time" not in data:
+                raise ValueError("仿真采样缺少 sim_time，无法在 use_sim_time 模式下发布消息")
+            return Time(nanoseconds=round(float(data["sim_time"]) * 1e9)).to_msg()
+        if "wall_time" in data:
+            return Time(nanoseconds=round(float(data["wall_time"]) * 1e9)).to_msg()
+        return self.get_clock().now().to_msg()
+
+    def destroy_node(self):
+        with self.command_condition:
+            self.command_running = False
+            self.command_condition.notify_all()
+        self.command_worker.join(timeout=1.0)
+        self.zero_worker.join(timeout=1.0)
+        if self.sim_clock_lock is not None:
+            self.sim_clock_lock.close()
+            self.sim_clock_lock = None
+        super().destroy_node()
 
     def log_connection_error(self, message):
         now = time.monotonic()
@@ -128,9 +271,9 @@ class IsaacPlatformBridge(Node):
     def publish_camera_frames(self):
         for name, publisher in self.camera_publishers.items():
             try:
-                jpeg, frame_id = self.request_camera(name)
+                jpeg, frame_id, sample = self.request_camera(name)
                 message = CompressedImage()
-                message.header.stamp = self.get_clock().now().to_msg()
+                message.header.stamp = self.message_stamp(sample)
                 message.header.frame_id = frame_id
                 message.format = "jpeg"
                 message.data = jpeg
@@ -141,50 +284,58 @@ class IsaacPlatformBridge(Node):
                     self.get_logger().warning(f"读取 {name} 相机图像失败: {err}")
                     self.last_camera_error_log = now
 
+    def pointcloud_message(self, points, stamp, frame_id):
+        point_step = 24
+        coordinates = bytearray(len(points) * point_step)
+        for index, point in enumerate(points):
+            if len(point) < 5:
+                raise ValueError("仿真点云缺少 ring/time 字段")
+            struct.pack_into(
+                "<ffffH2xf",
+                coordinates,
+                index * point_step,
+                point[0],
+                point[1],
+                point[2],
+                100.0,
+                int(point[3]),
+                point[4],
+            )
+        message = PointCloud2()
+        message.header.stamp = stamp
+        message.header.frame_id = frame_id
+        message.height = 1
+        message.width = len(points)
+        message.fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
+            PointField(name="ring", offset=16, datatype=PointField.UINT16, count=1),
+            PointField(name="time", offset=20, datatype=PointField.FLOAT32, count=1),
+        ]
+        message.is_bigendian = False
+        message.point_step = point_step
+        message.row_step = message.point_step * message.width
+        message.is_dense = all(math.isfinite(value) for point in points for value in point[:3])
+        message.data = coordinates
+        return message
+
     def publish_pointcloud(self):
         try:
             data = self.request("/pointcloud")
-            points = data["points"]
-            if not points:
-                return
-            point_step = 24
-            coordinates = bytearray(len(points) * point_step)
-            for index, point in enumerate(points):
-                if len(point) < 5:
-                    raise ValueError("仿真点云缺少 ring/time 字段")
-                struct.pack_into(
-                    "<ffffH2xf",
-                    coordinates,
-                    index * point_step,
-                    point[0],
-                    point[1],
-                    point[2],
-                    100.0,
-                    int(point[3]),
-                    point[4],
+            scan_stamp = self.message_stamp(data)
+            frame_id = data.get("frame_id", "base_scan")
+            self.pointcloud_publisher.publish(
+                self.pointcloud_message(data["points"], scan_stamp, frame_id)
+            )
+            self.obstacle_pointcloud_publisher.publish(
+                self.pointcloud_message(
+                    data.get("obstacle_points", []),
+                    scan_stamp,
+                    data.get("obstacle_frame_id", frame_id),
                 )
-            is_dense = all(math.isfinite(value) for point in points for value in point[:3])
-
-            message = PointCloud2()
-            scan_period = float(data.get("scan_period", 0.1))
-            message.header.stamp = (self.get_clock().now() - Duration(seconds=scan_period)).to_msg()
-            message.header.frame_id = data.get("frame_id", "base_scan")
-            message.height = 1
-            message.width = len(points)
-            message.fields = [
-                PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
-                PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
-                PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
-                PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1),
-                PointField(name="ring", offset=16, datatype=PointField.UINT16, count=1),
-                PointField(name="time", offset=20, datatype=PointField.FLOAT32, count=1),
-            ]
-            message.is_bigendian = False
-            message.point_step = point_step
-            message.row_step = message.point_step * message.width
-            message.is_dense = is_dense
-            message.data = coordinates
-            self.pointcloud_publisher.publish(message)
+            )
         except Exception as err:
             now = time.monotonic()
             if now - self.last_pointcloud_error_log > 5.0:
@@ -203,14 +354,15 @@ class IsaacPlatformBridge(Node):
             self.log_connection_error(f"读取仿真状态失败: {err}")
             return
 
-        stamp = self.get_clock().now().to_msg()
+        stamp = self.message_stamp(data)
+        if self.use_sim_time:
+            self.clock_publisher.publish(ClockMessage(clock=stamp))
         position = data["position"]
         quaternion = data["quaternion"]
         velocity = data["velocity"]
-        yaw = data["yaw"]
 
         self.publish_tf(stamp, position, quaternion)
-        self.publish_odometry(stamp, position, quaternion, velocity, yaw)
+        self.publish_odometry(stamp, position, quaternion, velocity)
         self.publish_imu(stamp, quaternion, velocity, data.get("steps"))
         self.publish_scan(stamp, data.get("scan", []), data.get("lidar", {}))
         self.battery_ticks += 1
@@ -240,6 +392,13 @@ class IsaacPlatformBridge(Node):
                 (quaternion["w"], quaternion["x"], quaternion["y"], quaternion["z"]),
             ),
             self.transform(stamp, "base_link", "base_scan", (0.15, 0.0, 0.20), (1.0, 0.0, 0.0, 0.0)),
+            self.transform(
+                stamp,
+                "base_link",
+                "camera_primary_optical_frame",
+                (0.28, 0.0, 0.12),
+                (0.5, -0.5, 0.5, -0.5),
+            ),
         ])
         self.tf_publisher.publish(TFMessage(transforms=transforms))
 
@@ -258,7 +417,7 @@ class IsaacPlatformBridge(Node):
         message.transform.rotation.z = rotation[3]
         return message
 
-    def publish_odometry(self, stamp, position, quaternion, velocity, yaw):
+    def publish_odometry(self, stamp, position, quaternion, velocity):
         message = Odometry()
         message.header.stamp = stamp
         message.header.frame_id = "odom"
@@ -271,14 +430,16 @@ class IsaacPlatformBridge(Node):
         message.pose.pose.orientation.y = quaternion["y"]
         message.pose.pose.orientation.z = quaternion["z"]
 
-        world_x = velocity["linear"]["x"]
-        world_y = velocity["linear"]["y"]
-        message.twist.twist.linear.x = math.cos(yaw) * world_x + math.sin(yaw) * world_y
-        message.twist.twist.linear.y = -math.sin(yaw) * world_x + math.cos(yaw) * world_y
-        message.twist.twist.linear.z = velocity["linear"]["z"]
-        message.twist.twist.angular.x = velocity["angular"]["x"]
-        message.twist.twist.angular.y = velocity["angular"]["y"]
-        message.twist.twist.angular.z = velocity["angular"]["z"]
+        linear = velocity["linear"]
+        angular = velocity["angular"]
+        body_linear = world_to_body(quaternion, (linear["x"], linear["y"], linear["z"]))
+        body_angular = world_to_body(quaternion, (angular["x"], angular["y"], angular["z"]))
+        message.twist.twist.linear.x = body_linear[0]
+        message.twist.twist.linear.y = body_linear[1]
+        message.twist.twist.linear.z = body_linear[2]
+        message.twist.twist.angular.x = body_angular[0]
+        message.twist.twist.angular.y = body_angular[1]
+        message.twist.twist.angular.z = body_angular[2]
         self.odom_publisher.publish(message)
 
     def publish_imu(self, stamp, quaternion, velocity, sim_steps=None):
@@ -294,26 +455,9 @@ class IsaacPlatformBridge(Node):
         message.orientation.y = qy
         message.orientation.z = qz
 
-        r00 = 1.0 - 2.0 * (qy * qy + qz * qz)
-        r01 = 2.0 * (qx * qy + qw * qz)
-        r02 = 2.0 * (qx * qz - qw * qy)
-        r10 = 2.0 * (qx * qy - qw * qz)
-        r11 = 1.0 - 2.0 * (qx * qx + qz * qz)
-        r12 = 2.0 * (qy * qz + qw * qx)
-        r20 = 2.0 * (qx * qz + qw * qy)
-        r21 = 2.0 * (qy * qz - qw * qx)
-        r22 = 1.0 - 2.0 * (qx * qx + qy * qy)
-
-        def world_to_body(x, y, z):
-            return (
-                r00 * x + r01 * y + r02 * z,
-                r10 * x + r11 * y + r12 * z,
-                r20 * x + r21 * y + r22 * z,
-            )
-
         angular = velocity["angular"]
         angular_x, angular_y, angular_z = world_to_body(
-            float(angular["x"]), float(angular["y"]), float(angular["z"])
+            quaternion, (angular["x"], angular["y"], angular["z"])
         )
         message.angular_velocity.x = angular_x
         message.angular_velocity.y = angular_y
@@ -337,7 +481,7 @@ class IsaacPlatformBridge(Node):
             self.smooth_acc_world[2] - 9.81,
         )
         specific_force = world_to_body(
-            world_acceleration[0], world_acceleration[1], world_acceleration[2] + 9.81
+            quaternion, (world_acceleration[0], world_acceleration[1], world_acceleration[2] + 9.81)
         )
         message.linear_acceleration.x = specific_force[0]
         message.linear_acceleration.y = specific_force[1]

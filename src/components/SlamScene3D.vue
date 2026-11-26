@@ -484,7 +484,7 @@ function syncLayerVisibility() {
   if (scanPoints) scanPoints.visible = localLayers.scan
   if (robotGroup) robotGroup.visible = localLayers.robot && hasRobotPos
   if (planLine) planLine.visible = localLayers.path
-  if (trajLine) trajLine.visible = false
+  if (trajLine) trajLine.visible = localLayers.path
   if (waypointGroup) waypointGroup.visible = localLayers.goal
 }
 
@@ -854,6 +854,14 @@ function updatePathLine(lineObj, pathMsg, zLift) {
   lineObj.geometry.setAttribute('position', new THREE.BufferAttribute(positions.subarray(0, count * 3), 3))
 }
 
+function updateTrajectory() {
+  const path = props.isMapping
+    ? props.fastlioPathData
+    : (props.localizationPathData || props.fastlioPathData)
+  updatePathLine(trajLine, path, 0.04)
+  if (trajLine) trajLine.visible = localLayers.path
+}
+
 function rebuildWaypoints() {
   if (!waypointGroup) return
   while (waypointGroup.children.length > 0) {
@@ -1021,6 +1029,7 @@ watch(() => props.connected, (isConn) => {
 
 watch(() => props.isMapping, (mapping) => {
   if (!mapping) pendingRegisteredCloud = null
+  updateTrajectory()
 })
 watch(() => props.odomData, updateRobotPoseFromTfOrOdom)
 watch(() => props.mapData, updateOccupancyMap)
@@ -1028,6 +1037,8 @@ watch(() => props.scanData, updateLaserScan)
 watch(() => props.pointCloudData, (msg) => updatePointCloudMesh(liveCloudPoints, msg, true))
 watch(() => props.registeredCloudData, (msg) => updatePointCloudMesh(regCloudPoints, msg, false))
 watch(() => props.planData, (msg) => updatePathLine(planLine, msg, 0.06))
+watch(() => props.fastlioPathData, updateTrajectory)
+watch(() => props.localizationPathData, updateTrajectory)
 watch(() => props.localizationData, updateRobotPoseFromTfOrOdom)
 watch(() => props.globalMapData, updateGlobalMap)
 watch([() => props.waypoints, () => props.activeWaypoint, () => props.multiPointMode], rebuildWaypoints, { deep: true })
@@ -1055,7 +1066,7 @@ onMounted(() => {
   if (props.pointCloudData) updatePointCloudMesh(liveCloudPoints, props.pointCloudData, true)
   if (props.registeredCloudData) updatePointCloudMesh(regCloudPoints, props.registeredCloudData, false)
   if (props.planData) updatePathLine(planLine, props.planData, 0.06)
-  if (props.fastlioPathData) updatePathLine(trajLine, props.fastlioPathData, 0.04)
+  updateTrajectory()
   updateRobotPoseFromTfOrOdom()
   rebuildWaypoints()
 

@@ -2,7 +2,7 @@
 """
 FAST-LIO 3D 定位 + Nav2 巡检导航统一启动文件（支持命名空间隔离，适配仿真与实机）
 - 定位：FAST-LIO (3D 点云 + IMU) + fastlio_localization.py (ICP 全局配准 + map->odom TF)
-- 导航：Nav2 map_server + planner_server (Navfn A*) + controller_server (RegulatedPurePursuit + 3D VoxelLayer) + behavior_server + bt_navigator
+- 导航：Nav2 map_server + planner_server + controller_server + velocity_smoother + behavior_server + bt_navigator
 用法示例：
   ros2 launch simulation/nav2_launch.py map:=/path/to/map.yaml namespace:=indoor
 """
@@ -23,13 +23,26 @@ def _build_actions(context):
     params_file = LaunchConfiguration("params_file").perform(context).strip()
     use_sim_time = LaunchConfiguration("use_sim_time").perform(context).strip()
     auto_initial_pose = LaunchConfiguration("auto_initial_pose").perform(context).strip()
+    obstacle_topic = LaunchConfiguration("obstacle_topic").perform(context).strip()
+    obstacle_min_height = LaunchConfiguration("obstacle_min_height").perform(context).strip() or "0.03"
 
+    if not map_yaml:
+        raise RuntimeError("缺少 Nav2 地图：启动前请提供 map:=/绝对路径/map.yaml")
+    map_path = Path(map_yaml).expanduser()
+    if not map_path.is_file():
+        raise RuntimeError(f"Nav2 地图 YAML 不存在: {map_path}；请检查 map 启动参数")
+    map_yaml = str(map_path.resolve())
     if not params_file:
         params_file = str(project_root / "config" / "nav2_params.yaml")
     fastlio_params = str(project_root / "config" / "fastlio_sim.yaml")
+    use_sim_time_enabled = use_sim_time.lower() == "true"
+    if not obstacle_topic:
+        obstacle_topic = "points"
+        print("[nav2_launch] WARNING: 未指定独立障碍云，回退到原始 points；实机需自行过滤地面和坡道")
+    if not obstacle_topic.startswith("/"):
+        obstacle_topic = f"/{namespace}/{obstacle_topic}" if namespace else f"/{obstacle_topic}"
 
     scan_topic = f"/{namespace}/scan" if namespace else "/scan"
-    points_topic = f"/{namespace}/points" if namespace else "/points"
     odom_topic = f"/{namespace}/odom" if namespace else "/odom"
     map_topic = f"/{namespace}/map" if namespace else "/map"
 
@@ -42,7 +55,8 @@ def _build_actions(context):
             "scan_topic": scan_topic,
             "odom_topic": odom_topic,
             "map_topic": map_topic,
-            "topic": points_topic,
+            "topic": obstacle_topic,
+            "min_obstacle_height": obstacle_min_height,
         },
         convert_types=True,
     )
@@ -67,6 +81,7 @@ def _build_actions(context):
     localization_nodes = ["map_server"]
     navigation_nodes = [
         "controller_server",
+        "velocity_smoother",
         "planner_server",
         "behavior_server",
         "bt_navigator",
@@ -78,7 +93,7 @@ def _build_actions(context):
             executable="fastlio_mapping",
             name="fastlio_localization_odom",
             output="screen",
-            parameters=[fastlio_params],
+            parameters=[fastlio_params, {"use_sim_time": use_sim_time_enabled}],
             remappings=fastlio_remappings,
         ),
         Node(
@@ -90,6 +105,7 @@ def _build_actions(context):
                 {"map_file": map_yaml},
                 {"topic_namespace": namespace},
                 {"auto_initial_pose": auto_initial_pose.lower() == "true"},
+                {"use_sim_time": use_sim_time_enabled},
             ],
         ),
         Node(
@@ -106,7 +122,15 @@ def _build_actions(context):
             name="controller_server",
             output="screen",
             parameters=[configured_params],
-            remappings=remappings,
+            remappings=remappings + [("cmd_vel", "cmd_vel_nav")],
+        ),
+        Node(
+            package="nav2_velocity_smoother",
+            executable="velocity_smoother",
+            name="velocity_smoother",
+            output="screen",
+            parameters=[configured_params],
+            remappings=remappings + [("cmd_vel", "cmd_vel_nav"), ("cmd_vel_smoothed", "cmd_vel")],
         ),
         Node(
             package="nav2_planner",
@@ -122,7 +146,7 @@ def _build_actions(context):
             name="behavior_server",
             output="screen",
             parameters=[configured_params],
-            remappings=remappings,
+            remappings=remappings + [("cmd_vel", "cmd_vel_nav")],
         ),
         Node(
             package="nav2_bt_navigator",
@@ -163,6 +187,7 @@ def _build_actions(context):
             output="screen",
             parameters=[
                 {"topic_namespace": namespace},
+                {"use_sim_time": use_sim_time_enabled},
             ],
         ),
     ]
@@ -194,6 +219,16 @@ def generate_launch_description():
                 description="Nav2 参数文件路径",
             ),
             DeclareLaunchArgument("use_sim_time", default_value="false", description="是否使用仿真时钟"),
+            DeclareLaunchArgument(
+                "obstacle_topic",
+                default_value="points_obstacles",
+                description="障碍点云；仿真默认独立云，实机无此话题时显式设为空或 points 回退原始云（需地面/坡道过滤）",
+            ),
+            DeclareLaunchArgument(
+                "obstacle_min_height",
+                default_value="0.03",
+                description="障碍点最低高度；使用实机原始点云时按地面过滤结果调整",
+            ),
             DeclareLaunchArgument(
                 "auto_initial_pose",
                 default_value="true",

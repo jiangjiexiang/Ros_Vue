@@ -32,7 +32,7 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { API_BASE } from '../../config.js'
+import { API_BASE, apiFetch } from '../../config.js'
 
 const props = defineProps({
   mapName: { type: String, default: '' },
@@ -65,6 +65,7 @@ let resizeObserver = null
 let isPanning = false
 let pointerDownPos = null
 let lastPanPos = null
+let loadGeneration = 0
 
 const mapMetaText = computed(() => {
   if (loading.value) return '正在加载地图…'
@@ -98,6 +99,7 @@ function decodePgmPixels(base64, width, height) {
 }
 
 async function loadMapContent() {
+  const generation = ++loadGeneration
   const name = (props.mapName || '').trim()
   pgmCanvas = null
   hasPgm.value = false
@@ -111,9 +113,10 @@ async function loadMapContent() {
 
   loading.value = true
   try {
-    const res = await fetch(`${API_BASE}/maps/${encodeURIComponent(name)}/content`)
+    const res = await apiFetch(`${API_BASE}/maps/${encodeURIComponent(name)}/content`)
     if (res.ok) {
       const data = await res.json()
+      if (generation !== loadGeneration) return
       if (data.success && data.width && data.height && data.pixels) {
         worldMeta.value = {
           width: data.width,
@@ -127,9 +130,11 @@ async function loadMapContent() {
     }
   } catch {}
   finally {
-    loading.value = false
-    await nextTick()
-    fitView()
+    if (generation === loadGeneration) {
+      loading.value = false
+      await nextTick()
+      fitView()
+    }
   }
 }
 
@@ -359,6 +364,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  loadGeneration += 1
   resizeObserver?.disconnect()
 })
 </script>

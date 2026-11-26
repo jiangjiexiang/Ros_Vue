@@ -26,5 +26,5 @@ trap cleanup EXIT INT TERM
 npm run dev &
 FRONTEND_PID=$!
 
-echo "机器人控制台: http://localhost:5173"
+echo "QuadPatrol 四足智巡平台: http://localhost:5173"
 wait -n "$BACKEND_PID" "$FRONTEND_PID"

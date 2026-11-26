@@ -1,4 +1,4 @@
-import { API_BASE } from '../../config.js'
+import { API_BASE, apiFetch } from '../../config.js'
 
 function normalizeApiMap(map, index) {
   const path = String(map.path || map.name || '')
@@ -17,7 +17,7 @@ export async function loadMapScenes({ timeoutMs = 4000 } = {}) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(`${API_BASE}/list_maps`, { signal: controller.signal })
+    const response = await apiFetch(`${API_BASE}/list_maps`, { signal: controller.signal })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.json()
     if (!Array.isArray(data.maps)) throw new Error('地图接口未返回 maps 数组')

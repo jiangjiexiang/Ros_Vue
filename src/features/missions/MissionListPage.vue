@@ -228,11 +228,11 @@ function openRun(mission) {
   navigate(MISSION_PATHS.run(mission.id), mission.id)
 }
 
-function copyMission(mission) {
+async function copyMission(mission) {
   notice.value = ''
   errorMessage.value = ''
   try {
-    const copy = duplicateMission(mission.id)
+    const copy = await duplicateMission(mission.id)
     notice.value = `已创建“${copy.name}”，可在列表中继续编辑。`
   } catch (error) {
     errorMessage.value = error.message
@@ -251,7 +251,7 @@ async function removeMission(mission) {
   notice.value = ''
   errorMessage.value = ''
   try {
-    deleteMission(mission.id)
+    await deleteMission(mission.id)
     showToast(`已删除任务“${mission.name}”`, 'info')
   } catch (error) {
     errorMessage.value = error.message

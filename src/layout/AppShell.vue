@@ -20,7 +20,7 @@
         >
           <div class="brand-mark"><UiIcon name="robot" :size="24" /></div>
           <div>
-            <div class="brand-title">四足巡检平台</div>
+            <div class="brand-title">QuadPatrol · 四足智巡平台</div>
             <div class="brand-subtitle">{{ activeRobot.name }}</div>
           </div>
         </RouterLink>

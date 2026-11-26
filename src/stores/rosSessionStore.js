@@ -1,13 +1,13 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useRosTransport } from '../composables/useRosTransport.js'
-import { API_BASE, DEFAULT_WS_URL } from '../config.js'
+import { API_BASE, apiFetch, DEFAULT_WS_URL } from '../config.js'
 import { useRobotStore } from './robotStore.js'
 import { TOPIC_DEFAULTS, useRuntimeConfigStore } from './runtimeConfigStore.js'
 import { useInspectionStore } from './inspectionStore.js'
 import { showToast } from './toastStore.js'
 
 const transport = useRosTransport()
-const { activeRobot, activeRobotId, selectActiveRobot } = useRobotStore()
+const { activeRobot, activeRobotId, markRobotsDirty, selectActiveRobot } = useRobotStore()
 const { runtimeTopics, controlConfig } = useRuntimeConfigStore()
 const { pushRuntimeAlert } = useInspectionStore()
 
@@ -23,9 +23,19 @@ const activeOperation = ref('maps')
 const mapsRevision = ref(0)
 const selectedScenePath = ref('')
 
-const mappingActive = ref(false)
-const localizationActive = ref(false)
-const navigationActive = ref(false)
+const operationMode = ref('idle')
+const mappingActive = computed({
+  get: () => operationMode.value === 'mapping',
+  set: (enabled) => setOperationMode(enabled ? 'mapping' : 'idle', 'mapping')
+})
+const localizationActive = computed({
+  get: () => operationMode.value === 'localization',
+  set: (enabled) => setOperationMode(enabled ? 'localization' : 'idle', 'localization')
+})
+const navigationActive = computed({
+  get: () => operationMode.value === 'navigation',
+  set: (enabled) => setOperationMode(enabled ? 'navigation' : 'idle', 'navigation')
+})
 const isSettingPose = ref(false)
 const multiPointMode = ref(false)
 const waypointQueue = ref([])
@@ -35,6 +45,8 @@ let waypointDispatchedAt = 0
 let waypointGoalSeenActive = false
 let waypointInitialStatusGoalId = ''
 let waypointRetryCount = 0
+let waypointAdvanceTimer = null
+let waypointRetryTimer = null
 const FEEDBACK_REACHED_THRESHOLD = 0.22
 const POSE_REACHED_THRESHOLD = 0.24
 const SETTLED_REACHED_THRESHOLD = 0.40
@@ -99,6 +111,27 @@ let globalMapSubId = null
 let keyboardInterval = null
 let initialized = false
 let intentionalDisconnect = false
+let lastConnectionSignature = ''
+let reconcileGeneration = 0
+
+function resetOperationRuntime() {
+  isSettingPose.value = false
+  multiPointMode.value = false
+  clearWaypoints()
+  navFeedback.value = null
+  navStatus.value = null
+  planData.value = null
+  setKeyboardEnabled(false)
+  onStopMotion()
+}
+
+function setOperationMode(mode, expectedMode = '') {
+  if (!['idle', 'mapping', 'localization', 'navigation'].includes(mode)) return
+  if (mode === 'idle' && expectedMode && operationMode.value !== expectedMode) return
+  if (operationMode.value === mode) return
+  resetOperationRuntime()
+  operationMode.value = mode
+}
 
 watch(() => activeRobot.value?.lidarType, (lidarType) => {
   mapLayers.value.scan = lidarType !== '3d'
@@ -118,6 +151,26 @@ const robotTopics = computed(() => {
     if (!namespace || !topic) return [key, topic]
     return [key, `/${namespace}/${topic.replace(/^\/+/, '')}`]
   }))
+})
+
+function currentConnectionSignature() {
+  return JSON.stringify({
+    id: activeRobot.value?.id || '',
+    url: activeRobot.value?.url || '',
+    transport: activeRobot.value?.transport || 'foxglove',
+    topics: robotTopics.value
+  })
+}
+
+watch(currentConnectionSignature, (signature) => {
+  if (!initialized || signature === lastConnectionSignature) return
+  const generation = ++reconcileGeneration
+  nextTick(() => {
+    if (!initialized || generation !== reconcileGeneration || signature !== currentConnectionSignature()) return
+    if (signature === lastConnectionSignature) return
+    if (connectionState.value !== 'disconnected') handleDisconnect()
+    handleConnect()
+  })
 })
 
 const connectionState = computed(() => transport.connectionState.value)
@@ -221,15 +274,22 @@ function handleConnect(url) {
   if (connectionState.value === 'connected' || connectionState.value === 'connecting') return
   intentionalDisconnect = false
   const targetUrl = url || activeRobot.value?.url || DEFAULT_WS_URL
-  if (activeRobot.value && url) {
-    activeRobot.value.url = targetUrl
+  if (activeRobot.value && url && activeRobot.value.url !== targetUrl) {
+    markRobotsDirty(() => { activeRobot.value.url = targetUrl })
   }
+  lastConnectionSignature = currentConnectionSignature()
   transport.connect(targetUrl, activeRobot.value?.transport || 'foxglove')
 }
 
 function handleDisconnect() {
+  reconcileGeneration++
   intentionalDisconnect = true
-  onStopMotion()
+  void stopNavigation().then((result) => {
+    if (!result.success) console.warn('断开连接前停车未完全成功:', result.errors)
+  }).catch((error) => {
+    console.warn('断开连接前停车异常:', error)
+  })
+  setOperationMode('idle')
   transport.disconnect()
   clearConnectionState()
 }
@@ -436,9 +496,10 @@ function onChannelsReady(event) {
 }
 
 function publishVelocity(linearX, angularZ) {
-  if (!isConnected.value) return
-  if (cmdVelChannelId) transport.sendTwist(cmdVelChannelId, linearX, angularZ)
-  if (manualCmdVelChannelId) transport.sendTwist(manualCmdVelChannelId, linearX, angularZ)
+  if (!isConnected.value) return { cmdVel: false, manualCmdVel: false }
+  const cmdVel = cmdVelChannelId ? transport.sendTwist(cmdVelChannelId, linearX, angularZ) !== false : false
+  const manualCmdVel = manualCmdVelChannelId ? transport.sendTwist(manualCmdVelChannelId, linearX, angularZ) !== false : false
+  return { cmdVel, manualCmdVel }
 }
 
 function onVelocityChange({ linearX, angularZ }) {
@@ -453,6 +514,8 @@ function sendGoalPose(x, y, yaw = 0) {
 
 function onGoalSet({ x, y }) {
   if (multiPointMode.value) return
+  navFeedback.value = null
+  navStatus.value = null
   sendGoalPose(x, y, 0)
 }
 
@@ -480,7 +543,9 @@ function advanceWaypoint() {
   if (waypointAdvancing.value) return
   if (Date.now() - waypointDispatchedAt < 900) return
   waypointAdvancing.value = true
-  setTimeout(() => {
+  if (waypointAdvanceTimer) clearTimeout(waypointAdvanceTimer)
+  waypointAdvanceTimer = setTimeout(() => {
+    waypointAdvanceTimer = null
     dispatchNextWaypoint()
     waypointAdvancing.value = false
   }, 400)
@@ -499,11 +564,17 @@ function onWaypointReached() {
 }
 
 function clearWaypoints() {
+  if (waypointAdvanceTimer) clearTimeout(waypointAdvanceTimer)
+  if (waypointRetryTimer) clearTimeout(waypointRetryTimer)
+  waypointAdvanceTimer = null
+  waypointRetryTimer = null
   waypointQueue.value = []
   activeWaypoint.value = null
   waypointAdvancing.value = false
   waypointGoalSeenActive = false
   waypointInitialStatusGoalId = ''
+  waypointRetryCount = 0
+  navFeedback.value = null
 }
 
 function onInitialPoseSet({ x, y, yaw }) {
@@ -522,23 +593,93 @@ function onStopMotion() {
     clearInterval(keyboardInterval)
     keyboardInterval = null
   }
-  publishVelocity(0, 0)
+  return publishVelocity(0, 0)
+}
+
+async function readApiJson(res, action) {
+  try {
+    return await res.json()
+  } catch {
+    throw new Error(`${action}返回了无效 JSON（HTTP ${res.status}）`)
+  }
+}
+
+async function stopNavigation() {
+  clearWaypoints()
+  setKeyboardEnabled(false)
+  const zero = onStopMotion()
+  navStatus.value = null
+  const errors = []
+  if (!zero.cmdVel) errors.push('cmd_vel 零速度发送失败')
+  if (!zero.manualCmdVel) errors.push('manual_cmd_vel 零速度发送失败')
+
+  const namespace = activeRobot.value?.namespace?.replace(/^\/+|\/+$/g, '') || ''
+  const scene = activeRobot.value?.simulationScene || ''
+  const cancelService = `${namespace ? `/${namespace}` : ''}/navigate_to_pose/_action/cancel_goal`
+  const cancel = { attempted: true, success: false, source: '', error: '' }
+  let directCancelError = ''
+  if (transport.protocol.value === 'rosbridge' && isConnected.value) {
+    try {
+      const response = await transport.callService(cancelService, {}, { timeoutMs: 2500 })
+      if (!response || response.success === false) throw new Error('CancelGoal 服务返回失败')
+      cancel.success = true
+      cancel.source = 'rosbridge'
+    } catch (error) {
+      directCancelError = error.message || 'rosbridge CancelGoal 调用失败'
+    }
+  } else {
+    directCancelError = 'rosbridge 不可用'
+  }
+
+  if (!cancel.success) {
+    try {
+      const res = await apiFetch(`${API_BASE}/cancel_navigation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scene, namespace })
+      })
+      const data = await readApiJson(res, '取消导航接口')
+      if (!res.ok || !data.success) throw new Error(data.error || data.message || `取消导航失败（HTTP ${res.status}）`)
+      cancel.success = true
+      cancel.source = 'http'
+      cancel.data = data
+    } catch (error) {
+      cancel.error = `${directCancelError}；后端取消失败：${error.message || '未知错误'}`
+      errors.push(cancel.error)
+    }
+  }
+
+  const simulation = { attempted: Boolean(scene), success: !scene, error: '' }
+  if (scene) {
+    try {
+      const query = `?scene=${encodeURIComponent(scene)}`
+      const res = await apiFetch(`${API_BASE}/simulation/velocity${query}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ linearX: 0, angularZ: 0 })
+      })
+      const data = await readApiJson(res, '仿真停车接口')
+      if (!res.ok || !data.success) throw new Error(data.error || data.message || `仿真停车失败（HTTP ${res.status}）`)
+      simulation.success = true
+      simulation.data = data
+    } catch (error) {
+      simulation.error = error.message || '仿真停车接口失败'
+      errors.push(simulation.error)
+    }
+  }
+
+  return { success: errors.length === 0, zero, cancel, simulation, errors }
 }
 
 async function emergencyStop() {
-  onStopMotion()
-  isSettingPose.value = false
-  clearWaypoints()
-  const scene = activeRobot.value?.simulationScene
-  const query = scene ? `?scene=${encodeURIComponent(scene)}` : ''
-  try {
-    await fetch(`${API_BASE}/simulation/velocity${query}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ linearX: 0, angularZ: 0 })
-    })
-  } catch {}
-  showToast('已触发急停，已下发零速度指令', 'warning')
+  setOperationMode('idle')
+  const result = await stopNavigation()
+  if (result.success) {
+    showToast('已触发急停，零速度、取消导航及仿真停车均已确认', 'warning')
+    return
+  }
+  const anySuccess = result.zero.cmdVel || result.zero.manualCmdVel || result.cancel.success || (result.simulation.attempted && result.simulation.success)
+  showToast(`${anySuccess ? '急停部分成功' : '急停失败'}：${result.errors.join('；')}`, 'error')
 }
 
 function isKeyboardDriving() {
@@ -611,8 +752,8 @@ watch([navigationActive, localizationActive], ([nav, loc]) => {
 })
 
 watch(connectionState, (current, previous) => {
-  if (previous === 'connected' && current !== 'connected' && current !== 'connecting') {
-    if (!intentionalDisconnect) {
+  if (previous === 'connected' && current !== 'connected') {
+    if (!intentionalDisconnect && current !== 'connecting') {
       const robot = activeRobot.value
       pushRuntimeAlert({
         dedupeKey: `disconnect-${robot?.id || 'default'}`,
@@ -626,6 +767,7 @@ watch(connectionState, (current, previous) => {
         threshold: '在线会话异常断开'
       })
     }
+    setOperationMode('idle')
     clearConnectionState()
   }
 })
@@ -677,8 +819,11 @@ watch(navStatus, (st) => {
       waypointDispatchedAt = Date.now()
       waypointGoalSeenActive = false
       waypointInitialStatusGoalId = st.goal_id || ''
-      setTimeout(() => {
+      if (waypointRetryTimer) clearTimeout(waypointRetryTimer)
+      waypointRetryTimer = setTimeout(() => {
+        waypointRetryTimer = null
         if (multiPointMode.value && activeWaypoint.value) {
+          navFeedback.value = null
           sendGoalPose(activeWaypoint.value.x, activeWaypoint.value.y, 0)
         }
       }, 300)
@@ -737,6 +882,8 @@ export function useRosSessionStore() {
     activeOperation,
     mapsRevision,
     selectedScenePath,
+    operationMode,
+    setOperationMode,
     mappingActive,
     localizationActive,
     navigationActive,
@@ -788,6 +935,7 @@ export function useRosSessionStore() {
     clearWaypoints,
     onInitialPoseSet,
     onStopMotion,
+    stopNavigation,
     emergencyStop,
     initRosSession,
     disposeRosSession

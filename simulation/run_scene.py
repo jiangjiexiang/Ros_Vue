@@ -25,8 +25,8 @@ def load_control_config():
                 control[name] = value
     except (OSError, json.JSONDecodeError):
         pass
-    control["max_linear_speed"] = max(0.1, min(5.0, control["max_linear_speed"]))
-    control["max_angular_speed"] = max(0.1, min(3.0, control["max_angular_speed"]))
+    control["max_linear_speed"] = max(0.1, min(1.0, control["max_linear_speed"]))
+    control["max_angular_speed"] = max(0.1, min(1.0, control["max_angular_speed"]))
     control["command_timeout_ms"] = max(200, min(3000, round(control["command_timeout_ms"])))
     return control
 
@@ -51,6 +51,7 @@ stop_requested = False
 def request_stop(signum, frame):
     global stop_requested
     stop_requested = True
+    print(f"[SCENE_SIGNAL] 收到停止信号 {signum}", flush=True)
 
 
 signal.signal(signal.SIGTERM, request_stop)
@@ -158,6 +159,7 @@ class ControlState:
         self.linear_x = 0.0
         self.angular_z = 0.0
         self.command_time = 0.0
+        self.last_command_sequence = 0
         self.applied_linear_x = 0.0
         self.applied_angular_z = 0.0
         self.policy_action = None
@@ -166,11 +168,16 @@ class ControlState:
         self.camera_frames = {}
         self.pointcloud_data = None
 
-    def set_command(self, linear_x, angular_z):
+    def set_command(self, linear_x, angular_z, sequence=None):
         with self.lock:
+            if sequence is not None and sequence <= self.last_command_sequence:
+                return False
+            if sequence is not None:
+                self.last_command_sequence = sequence
             self.linear_x = linear_x
             self.angular_z = angular_z
             self.command_time = time.monotonic()
+            return True
 
     def command(self):
         with self.lock:
@@ -178,7 +185,7 @@ class ControlState:
                 return 0.0, 0.0
             return self.linear_x, self.angular_z
 
-    def update_telemetry(self, scene, steps, position, quaternion, velocity, yaw, linear_x, angular_z, scan):
+    def update_telemetry(self, scene, steps, position, quaternion, velocity, yaw, linear_x, angular_z, scan, sim_time):
         with self.lock:
             pointcloud_metadata = dict(POINTCLOUD_METADATA)
             pointcloud_metadata["point_count"] = (
@@ -188,6 +195,8 @@ class ControlState:
                 "ready": True,
                 "scene": scene,
                 "steps": steps,
+                "sim_time": sim_time,
+                "wall_time": time.time(),
                 "position": {"x": position[0], "y": position[1], "z": position[2]},
                 "quaternion": {"w": quaternion[0], "x": quaternion[1], "y": quaternion[2], "z": quaternion[3]},
                 "velocity": {
@@ -201,21 +210,25 @@ class ControlState:
                 "pointcloud": pointcloud_metadata,
             }
 
-    def update_pointcloud(self, points):
+    def update_pointcloud(self, points, obstacle_points, sim_time):
         with self.lock:
             self.pointcloud_data = {
                 "frame_id": POINTCLOUD_METADATA["frame_id"],
+                "obstacle_frame_id": POINTCLOUD_METADATA["frame_id"],
                 "scan_period": POINTCLOUD_UPDATE_PERIOD,
+                "sim_time": sim_time,
+                "wall_time": time.time(),
                 "points": points,
+                "obstacle_points": obstacle_points,
             }
 
     def pointcloud(self):
         with self.lock:
             return self.pointcloud_data
 
-    def update_camera(self, name, jpeg):
+    def update_camera(self, name, jpeg, sim_time):
         with self.lock:
-            self.camera_frames[name] = jpeg
+            self.camera_frames[name] = (jpeg, sim_time, time.time())
 
     def camera_frame(self, name):
         with self.lock:
@@ -251,15 +264,18 @@ class ControlHandler(BaseHTTPRequestHandler):
             if name not in CAMERA_FRAME_IDS:
                 self.respond(404, {"success": False, "error": "相机不存在"})
                 return
-            jpeg = self.server.control_state.camera_frame(name)
-            if jpeg is None:
+            frame = self.server.control_state.camera_frame(name)
+            if frame is None:
                 self.respond(503, {"success": False, "error": "相机图像尚未就绪"})
                 return
+            jpeg, sim_time, wall_time = frame
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(jpeg)))
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Frame-Id", CAMERA_FRAME_IDS[name])
+            self.send_header("X-Sample-Time", str(sim_time))
+            self.send_header("X-Wall-Time", str(wall_time))
             w = OVERVIEW_WIDTH if name == "overview" else CAMERA_WIDTH
             h = OVERVIEW_HEIGHT if name == "overview" else CAMERA_HEIGHT
             self.send_header("X-Image-Width", str(w))
@@ -286,8 +302,14 @@ class ControlHandler(BaseHTTPRequestHandler):
             angular_limit = CONTROL_CONFIG["max_angular_speed"]
             linear_x = max(-linear_limit, min(linear_limit, linear_x))
             angular_z = max(-angular_limit, min(angular_limit, angular_z))
-            self.server.control_state.set_command(linear_x, angular_z)
-            self.respond(200, {"success": True, "linearX": linear_x, "angularZ": angular_z})
+            sequence = data.get("sequence")
+            if sequence is not None and (not isinstance(sequence, int) or isinstance(sequence, bool)):
+                raise ValueError("指令序列号必须是整数")
+            accepted = self.server.control_state.set_command(linear_x, angular_z, sequence)
+            self.respond(
+                200,
+                {"success": accepted, "stale": not accepted, "linearX": linear_x, "angularZ": angular_z},
+            )
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as err:
             self.respond(400, {"success": False, "error": str(err)})
 
@@ -480,8 +502,10 @@ def apply_control(robot, control_state, dt, policy):
     if control_state.policy_action is None:
         control_state.policy_action = torch.zeros_like(robot.data.default_joint_pos)
     if control_state.policy_step % 4 == 0:
+        normalized_linear = linear_x / CONTROL_CONFIG["max_linear_speed"]
+        normalized_angular = angular_z / CONTROL_CONFIG["max_angular_speed"]
         commands = torch.tensor(
-            [[max(-1.0, min(1.0, linear_x)), 0.0, max(-1.0, min(1.0, angular_z))]],
+            [[max(-1.0, min(1.0, normalized_linear)), 0.0, max(-1.0, min(1.0, normalized_angular))]],
             device=robot.data.default_joint_pos.device,
         )
         observations = torch.cat((
@@ -527,12 +551,17 @@ def lidar_ranges(lidar):
     return [0.0 if value >= 11.99 or not math.isfinite(value) else value for value in values]
 
 
-def create_pointcloud_lidar():
+def create_pointcloud_lidar(terrain=True):
+    mesh_prim_paths = ["/World/Environment"]
+    if terrain:
+        if args_cli.scene == "outdoor":
+            mesh_prim_paths.append("/World/Traversable")
+        mesh_prim_paths.append("/World/Ground")
     cfg = MultiMeshRayCasterCfg(
         prim_path="/World/Go2/base",
         update_period=POINTCLOUD_UPDATE_PERIOD,
         offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.15, 0.0, 0.20)),
-        mesh_prim_paths=["/World/Environment", "/World/Ground"],
+        mesh_prim_paths=mesh_prim_paths,
         ray_alignment="base",
         pattern_cfg=patterns.LidarPatternCfg(
             channels=POINTCLOUD_METADATA["channels"],
@@ -561,7 +590,7 @@ def pointcloud_points(lidar):
     ray_indices = valid.nonzero(as_tuple=False).squeeze(-1).detach().cpu().tolist()
     horizontal_samples = POINTCLOUD_METADATA["horizontal_samples"]
     return [
-        [*point, ray_index // horizontal_samples, (ray_index % horizontal_samples) / horizontal_samples * POINTCLOUD_UPDATE_PERIOD]
+        [*point, ray_index // horizontal_samples, 0.0]
         for point, ray_index in zip(coordinates, ray_indices)
     ]
 
@@ -624,11 +653,13 @@ def main():
     sim.set_camera_view(eye=scene["camera"][0], target=scene["camera"][1])
     robot = design_scene(args_cli.scene, sim)
     lidar = create_lidar()
-    pointcloud_lidar = create_pointcloud_lidar()
+    pointcloud_lidar = create_pointcloud_lidar(terrain=True)
+    obstacle_pointcloud_lidar = create_pointcloud_lidar(terrain=False)
     cameras = create_cameras(enable_overview=args_cli.overview_camera)
     sim.reset()
     lidar.reset()
     pointcloud_lidar.reset()
+    obstacle_pointcloud_lidar.reset()
     for camera in cameras.values():
         camera.reset()
     reset_robot(robot)
@@ -664,11 +695,25 @@ def main():
             quaternion = robot.data.root_quat_w[0].tolist()
             velocity = robot.data.root_vel_w[0].tolist()
             control_state.update_telemetry(
-                args_cli.scene, steps, position, quaternion, velocity, yaw, linear_x, angular_z, lidar_ranges(lidar)
+                args_cli.scene,
+                steps,
+                position,
+                quaternion,
+                velocity,
+                yaw,
+                linear_x,
+                angular_z,
+                lidar_ranges(lidar),
+                steps * physics_dt,
             )
         if pointcloud_update_due:
             pointcloud_lidar.update(dt=POINTCLOUD_UPDATE_PERIOD, force_recompute=True)
-            control_state.update_pointcloud(pointcloud_points(pointcloud_lidar))
+            obstacle_pointcloud_lidar.update(dt=POINTCLOUD_UPDATE_PERIOD, force_recompute=True)
+            control_state.update_pointcloud(
+                pointcloud_points(pointcloud_lidar),
+                pointcloud_points(obstacle_pointcloud_lidar),
+                steps * physics_dt,
+            )
         if camera_update_due:
             next_camera_update_time += CAMERA_UPDATE_PERIOD
             if "overview" in cameras:
@@ -695,7 +740,11 @@ def main():
                 cameras["overview"].set_world_poses_from_view(eyes, targets)
             for name, camera in cameras.items():
                 camera.update(dt=CAMERA_UPDATE_PERIOD, force_recompute=True)
-                control_state.update_camera(name, encode_camera(camera, quality=88 if name == "overview" else 80))
+                control_state.update_camera(
+                    name,
+                    encode_camera(camera, quality=88 if name == "overview" else 80),
+                    steps * physics_dt,
+                )
 
         if args_cli.test_steps and steps >= args_cli.test_steps:
             if not torch.isfinite(robot.data.root_state_w).all().item():
@@ -718,12 +767,22 @@ def main():
                 next_step_deadline = now
     control_server.shutdown()
     control_server.server_close()
+    if args_cli.test_steps and steps < args_cli.test_steps:
+        raise RuntimeError(
+            f"仿真提前停止：仅完成 {steps}/{args_cli.test_steps} 步，"
+            f"stop_requested={stop_requested}，app_running={simulation_app.is_running()}"
+        )
 
 
 if __name__ == "__main__":
     try:
         main()
+    except BaseException as error:
+        if args_cli.test_steps:
+            print(f"[SCENE_TEST_FAILED] {type(error).__name__}: {error}", flush=True)
+            os._exit(1)
+        raise
     finally:
-        if stop_requested:
+        if stop_requested and not args_cli.test_steps:
             os._exit(0)
         simulation_app.close()

@@ -82,7 +82,8 @@
 
 <script setup>
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
+import { useRosSessionStore } from '../stores/rosSessionStore.js'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
@@ -97,6 +98,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:isNavigating', 'update:isSettingPose', 'update:multiPointMode', 'update:selectedMap', 'navigationStarted', 'clear-waypoints', 'save-mission'])
+const { operationMode, setOperationMode } = useRosSessionStore()
 const isNavigating = ref(props.isNavigating)
 const isLoading = ref(false)
 const errorMsg = ref('')
@@ -105,6 +107,8 @@ const selectedMap = ref(props.selectedMap)
 const isSettingPose = ref(props.isSettingPose)
 const multiPointMode = ref(props.multiPointMode)
 let statusTimer = null
+let statusGeneration = 0
+let disposed = false
 
 const hintText = computed(() => {
   if (isSettingPose.value) return '在地图中按住并拖动，设置机器人位置与朝向。'
@@ -115,7 +119,7 @@ const hintText = computed(() => {
 async function loadMaps() {
   isLoading.value = true
   try {
-    const res = await fetch(`${API_BASE}/list_maps`)
+    const res = await apiFetch(`${API_BASE}/list_maps`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     maps.value = data.maps || []
@@ -130,14 +134,25 @@ async function loadMaps() {
 }
 
 async function checkStatus() {
+  const generation = ++statusGeneration
+  const scene = props.simulationScene
   try {
-    const query = props.simulationScene ? `?scene=${encodeURIComponent(props.simulationScene)}` : ''
-    const res = await fetch(`${API_BASE}/localization_status${query}`)
+    const query = scene ? `?scene=${encodeURIComponent(scene)}` : ''
+    const res = await apiFetch(`${API_BASE}/localization_status${query}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    isNavigating.value = data.isRunning
-    emit('update:isNavigating', data.isRunning)
-    if (!data.isRunning) errorMsg.value = ''
+    if (disposed || generation !== statusGeneration || scene !== props.simulationScene) return
+    if (data.isRunning) {
+      if (operationMode.value === 'idle' || operationMode.value === 'navigation') {
+        isNavigating.value = true
+        emit('update:isNavigating', true)
+      }
+    } else {
+      isNavigating.value = false
+      emit('update:isNavigating', false)
+      if (operationMode.value === 'localization') setOperationMode('idle')
+      errorMsg.value = ''
+    }
   } catch (err) {
     console.error('获取导航状态失败:', err)
   }
@@ -148,16 +163,18 @@ async function startNavigation() {
     errorMsg.value = '请先选择一张地图'
     return
   }
+  const scene = props.simulationScene
   isLoading.value = true
   errorMsg.value = ''
   try {
-    const res = await fetch(`${API_BASE}/start_localization`, {
+    const res = await apiFetch(`${API_BASE}/start_localization`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene: props.simulationScene, mapPath: selectedMap.value })
+      body: JSON.stringify({ scene, mapPath: selectedMap.value })
     })
     const data = await res.json()
-    if (!data.success) throw new Error(data.error || '启动失败')
+    if (!res.ok || !data.success) throw new Error(data.error || `启动失败（HTTP ${res.status}）`)
+    if (disposed || scene !== props.simulationScene) return
     isNavigating.value = true
     emit('update:isNavigating', true)
     emit('navigationStarted')
@@ -169,6 +186,7 @@ async function startNavigation() {
 }
 
 async function stopNavigation() {
+  const scene = props.simulationScene
   isLoading.value = true
   errorMsg.value = ''
   setPoseMode(false)
@@ -178,13 +196,14 @@ async function stopNavigation() {
     emit('clear-waypoints')
   }
   try {
-    const res = await fetch(`${API_BASE}/stop_localization`, {
+    const res = await apiFetch(`${API_BASE}/stop_localization`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene: props.simulationScene })
+      body: JSON.stringify({ scene })
     })
     const data = await res.json()
-    if (!data.success) throw new Error(data.error || '停止失败')
+    if (!res.ok || !data.success) throw new Error(data.error || `停止失败（HTTP ${res.status}）`)
+    if (disposed || scene !== props.simulationScene) return
     isNavigating.value = false
     emit('update:isNavigating', false)
   } catch (err) {
@@ -219,14 +238,18 @@ watch(() => props.isSettingPose, (value) => { isSettingPose.value = value })
 watch(() => props.mapsRevision, loadMaps)
 watch(selectedMap, (value) => emit('update:selectedMap', value))
 watch(() => props.selectedMap, (value) => { selectedMap.value = value })
+watch(() => props.simulationScene, () => { statusGeneration++ })
 
 onMounted(async () => {
+  disposed = false
   await loadMaps()
   await checkStatus()
   statusTimer = setInterval(checkStatus, 3000)
 })
 
 onUnmounted(() => {
+  disposed = true
+  statusGeneration++
   if (statusTimer) clearInterval(statusTimer)
 })
 </script>

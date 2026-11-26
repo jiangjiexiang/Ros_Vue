@@ -24,6 +24,7 @@ const channelIdsByTopic = new Map()     // topic → channelId
 const subscriptionCallbacks = new Map() // subscriptionId → callback(parsedJSON)
 const subscriptionIdToTopic = new Map() // subscriptionId → topic
 const clientChannels = new Map()        // clientChannelId → {topic, ...}
+const pendingServiceCalls = new Map()   // requestId → {resolve, reject, timer, service}
 
 const TOPICS_REFRESH_INTERVAL = 5000
 
@@ -130,6 +131,11 @@ function stopTopicsRefresh() {
 }
 
 function cleanup() {
+    for (const pending of pendingServiceCalls.values()) {
+        clearTimeout(pending.timer)
+        pending.reject(new Error(`rosbridge 服务调用因连接关闭而失败: ${pending.service}`))
+    }
+    pendingServiceCalls.clear()
     availableChannels.clear()
     channelIdsByTopic.clear()
     subscriptionCallbacks.clear()
@@ -194,7 +200,49 @@ function handlePublish(msg) {
     }
 }
 
+const CANCEL_GOAL_RETURN_CODES = {
+    1: 'ERROR_REJECTED',
+    2: 'ERROR_UNKNOWN_GOAL_ID',
+    3: 'ERROR_GOAL_TERMINATED'
+}
+
+function findReturnCode(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 6) return undefined
+    for (const key of ['return_code', 'returnCode', 'return-code']) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue
+        const raw = value[key] && typeof value[key] === 'object' ? value[key].data : value[key]
+        if (raw !== null && raw !== '' && Number.isFinite(Number(raw))) return Number(raw)
+    }
+    for (const nested of Object.values(value)) {
+        const code = findReturnCode(nested, depth + 1)
+        if (code !== undefined) return code
+    }
+    return undefined
+}
+
 function handleServiceResponse(msg) {
+    const pending = pendingServiceCalls.get(msg.id)
+    if (pending) {
+        pendingServiceCalls.delete(msg.id)
+        clearTimeout(pending.timer)
+        if (msg.result !== true) {
+            const detail = msg.values?.error || msg.values?.message || msg.message || '服务返回失败'
+            pending.reject(new Error(`${pending.service}: ${detail}`))
+        } else if (pending.service.endsWith('/cancel_goal')) {
+            const returnCode = findReturnCode(msg.values)
+            if (returnCode === undefined) {
+                pending.reject(new Error(`${pending.service}: CancelGoal 响应缺少 return_code`))
+            } else if (returnCode !== 0) {
+                const reason = CANCEL_GOAL_RETURN_CODES[returnCode] || `UNKNOWN_RETURN_CODE_${returnCode}`
+                pending.reject(new Error(`${pending.service}: ${reason} (${returnCode})`))
+            } else {
+                pending.resolve({ success: true, id: msg.id, values: msg.values, returnCode })
+            }
+        } else {
+            pending.resolve({ success: true, id: msg.id, values: msg.values })
+        }
+        return
+    }
     if (msg.id !== latestTopicsRequestId) return
 
     if (msg.result === false) {
@@ -214,6 +262,31 @@ function handleServiceResponse(msg) {
 }
 
 // ======================== 话题发现 ========================
+
+function callService(service, args = {}, { timeoutMs = 2500 } = {}) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return Promise.reject(new Error(`rosbridge 未连接，无法调用 ${service}`))
+    }
+    const requestId = `service_${nextServiceRequestId++}`
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingServiceCalls.delete(requestId)
+            reject(new Error(`rosbridge 服务调用超时: ${service}`))
+        }, timeoutMs)
+        pendingServiceCalls.set(requestId, { resolve, reject, timer, service })
+        const sent = sendJson({
+            op: 'call_service',
+            id: requestId,
+            service,
+            args
+        })
+        if (!sent) {
+            clearTimeout(timer)
+            pendingServiceCalls.delete(requestId)
+            reject(new Error(`rosbridge 服务调用发送失败: ${service}`))
+        }
+    })
+}
 
 function refreshTopics() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
@@ -377,7 +450,7 @@ function publishMessage(channelId, data) {
         return
     }
 
-    sendJson({
+    return sendJson({
         op: 'publish',
         id: String(channelId),
         topic: channel.topic,
@@ -432,7 +505,7 @@ function sendTwist(channelId, linearX, angularZ) {
         linear: { x: linearX, y: 0.0, z: 0.0 },
         angular: { x: 0.0, y: 0.0, z: angularZ }
     }
-    publishMessage(channelId, twist)
+    return publishMessage(channelId, twist)
 }
 
 /**
@@ -492,6 +565,7 @@ export function useRosbridge() {
         unsubscribe,
         clientAdvertise,
         publishMessage,
+        callService,
         sendTwist,
         sendGoalPose,
         sendInitialPose,

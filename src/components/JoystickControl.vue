@@ -15,8 +15,10 @@
           ref="canvasRef"
           :width="canvasSize"
           :height="canvasSize"
-          @mousedown="onStart"
-          @touchstart.prevent="onTouchStart"
+          style="touch-action: none"
+          @pointerdown.prevent="onStart"
+          @pointercancel="stopMotion"
+          @lostpointercapture="onPointerCancel"
         />
       </div>
 
@@ -57,7 +59,7 @@ const knobX = ref(0)
 const knobY = ref(0)
 let isDragging = false
 let wasActive = false
-let animationId = null
+let activePointerId = null
 let sendTimer = null
 
 const linearDisplay = computed(() => (knobY.value * -props.maxLinearSpeed).toFixed(2))
@@ -152,67 +154,47 @@ function updateFromEvent(event) {
 }
 
 function onStart(event) {
-  if (!props.connected) return
+  if (!props.connected || isDragging || (event.pointerType === 'mouse' && event.button !== 0)) return
   isDragging = true
+  activePointerId = event.pointerId
+  try { canvasRef.value?.setPointerCapture(event.pointerId) } catch {}
   updateFromEvent(event)
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onEnd)
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onEnd)
+  window.addEventListener('pointercancel', onPointerCancel)
 }
 
 function onMove(event) {
-  if (isDragging) updateFromEvent(event)
+  if (isDragging && event.pointerId === activePointerId) updateFromEvent(event)
 }
 
-function onEnd() {
-  isDragging = false
-  removePointerListeners()
-  animateReturn()
+function onEnd(event) {
+  if (event?.pointerId !== undefined && event.pointerId !== activePointerId) return
+  stopMotion()
 }
 
-function onTouchStart(event) {
-  if (!props.connected) return
-  isDragging = true
-  updateFromEvent(event.touches[0])
-  window.addEventListener('touchmove', onTouchMove, { passive: false })
-  window.addEventListener('touchend', onEnd)
-}
-
-function onTouchMove(event) {
-  if (!isDragging) return
-  event.preventDefault()
-  updateFromEvent(event.touches[0])
+function onPointerCancel(event) {
+  if (activePointerId === null) return
+  if (event?.pointerId !== undefined && event.pointerId !== activePointerId) return
+  stopMotion()
 }
 
 function removePointerListeners() {
-  window.removeEventListener('mousemove', onMove)
-  window.removeEventListener('mouseup', onEnd)
-  window.removeEventListener('touchmove', onTouchMove)
-  window.removeEventListener('touchend', onEnd)
-}
-
-function animateReturn() {
-  if (animationId) cancelAnimationFrame(animationId)
-  function step() {
-    knobX.value *= 0.82
-    knobY.value *= 0.82
-    if (Math.abs(knobX.value) < 0.01 && Math.abs(knobY.value) < 0.01) {
-      knobX.value = 0
-      knobY.value = 0
-      draw()
-      return
-    }
-    draw()
-    animationId = requestAnimationFrame(step)
-  }
-  step()
+  window.removeEventListener('pointermove', onMove)
+  window.removeEventListener('pointerup', onEnd)
+  window.removeEventListener('pointercancel', onPointerCancel)
 }
 
 function stopMotion(forceEmit = true) {
-  if (animationId) cancelAnimationFrame(animationId)
   const hadMotion = isDragging || wasActive || Math.abs(knobX.value) > 0.001 || Math.abs(knobY.value) > 0.001
+  const pointerId = activePointerId
   isDragging = false
   wasActive = false
+  activePointerId = null
   removePointerListeners()
+  if (pointerId !== null) {
+    try { canvasRef.value?.releasePointerCapture(pointerId) } catch {}
+  }
   knobX.value = 0
   knobY.value = 0
   draw()
@@ -255,11 +237,14 @@ watch(() => props.connected, (connected) => {
     draw()
   } else {
     stopSendLoop()
-    stopMotion(false)
+    stopMotion()
   }
 })
 
 onMounted(() => {
+  window.addEventListener('blur', stopMotion)
+  window.addEventListener('touchcancel', stopMotion)
+  window.addEventListener('pagehide', stopMotion)
   draw()
   if (props.connected) startSendLoop()
 })
@@ -271,13 +256,17 @@ onActivated(() => {
 
 onDeactivated(() => {
   stopSendLoop()
-  stopMotion(false)
+  stopMotion()
 })
 
 onUnmounted(() => {
   stopSendLoop()
-  stopMotion(false)
+  stopMotion()
+  window.removeEventListener('blur', stopMotion)
+  window.removeEventListener('touchcancel', stopMotion)
+  window.removeEventListener('pagehide', stopMotion)
   removePointerListeners()
-  if (animationId) cancelAnimationFrame(animationId)
 })
+
+defineExpose({ reset: stopMotion })
 </script>

@@ -2,11 +2,14 @@
 高写实工业巡检仿真资产生成器（纯本地离线 PBR 纹理 + 多部件 USD 工业设备建模）
 - 零云端依赖，首次自动生成并缓存高分辨率 PBR 贴图至 simulation/textures/
 - 使用显式 UV (primvars:st) 的 UsdGeom.Mesh + UsdPreviewSurface（含漫反射/粗糙度/金属度/自发光）
-- 严格区分物理碰撞与激光雷达网格 (/World/Environment) 与纯装饰地板/顶棚 (/World/Decor)，确保 Nav2 代价地图与 3D 点云干净精准
+- 区分障碍 (/World/Environment)、可通行坡面 (/World/Traversable) 与装饰 (/World/Decor)，Nav2 仅使用障碍云，FAST-LIO 使用完整点云
 """
 
+import fcntl
 import math
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -89,8 +92,44 @@ def _draw_analog_gauge(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, need
     draw.ellipse([cx - 7, cy - 7, cx + 7, cy + 7], fill=(28, 32, 38))
 
 
+def _atomic_save_image(image: Image.Image, path: Path):
+    temporary = tempfile.NamedTemporaryFile(
+        prefix=f".{path.stem}.", suffix=path.suffix, dir=path.parent, delete=False
+    )
+    try:
+        with temporary:
+            image.save(temporary, format="PNG")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary.name, path)
+    except Exception:
+        Path(temporary.name).unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_text(path: Path, content: str):
+    temporary = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", prefix=f".{path.name}.", dir=path.parent, delete=False
+    )
+    try:
+        with temporary:
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary.name, path)
+    except Exception:
+        Path(temporary.name).unlink(missing_ok=True)
+        raise
+
+
 def ensure_textures() -> dict[str, str]:
-    """Generate and cache all high-resolution industrial inspection PBR textures locally."""
+    TEXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(TEXTURE_DIR / ".generation.lock", "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return _ensure_textures_locked()
+
+
+def _ensure_textures_locked() -> dict[str, str]:
     TEXTURE_DIR.mkdir(parents=True, exist_ok=True)
     stamp_file = TEXTURE_DIR / ".version"
     names = [
@@ -136,10 +175,10 @@ def ensure_textures() -> dict[str, str]:
         fd.line([(pos + 4, 0), (pos + 4, sz)], fill=(86, 108, 128), width=2)
         fd.line([(0, pos), (sz, pos)], fill=(38, 52, 66), width=5)
         fd.line([(0, pos + 4), (sz, pos + 4)], fill=(86, 108, 128), width=2)
-    floor_img.save(TEXTURE_DIR / "epoxy_floor.png")
+    _atomic_save_image(floor_img, TEXTURE_DIR / "epoxy_floor.png")
 
     rough = np.clip(75 + (blend - 0.5) * 85, 35, 175).astype(np.uint8)
-    Image.fromarray(rough, mode="L").save(TEXTURE_DIR / "epoxy_roughness.png")
+    _atomic_save_image(Image.fromarray(rough, mode="L"), TEXTURE_DIR / "epoxy_roughness.png")
 
     # 2. Industrial painted white-grey brick wall (1024x1024)
     w_n = _smooth_noise(1024, 1024, seed=41, scale=12)
@@ -159,7 +198,7 @@ def ensure_textures() -> dict[str, str]:
     bd.line([(0, 916), (1024, 916)], fill=(42, 48, 56), width=6)
     # Subtle yellow-grey safety rail stripe
     bd.rectangle([0, 886, 1024, 908], fill=(224, 176, 36))
-    brick_img.save(TEXTURE_DIR / "brick_wall.png")
+    _atomic_save_image(brick_img, TEXTURE_DIR / "brick_wall.png")
 
     # 3. Corrugated industrial safety-yellow upper wall cladding (512x512)
     yc = Image.new("RGB", (512, 512), (228, 176, 22))
@@ -168,7 +207,7 @@ def ensure_textures() -> dict[str, str]:
         yd.rectangle([x, 0, x + 8, 512], fill=(202, 152, 14))
         yd.rectangle([x + 8, 0, x + 12, 512], fill=(244, 198, 48))
     yd.rectangle([0, 488, 512, 512], fill=(74, 82, 92))
-    yc.save(TEXTURE_DIR / "yellow_cladding.png")
+    _atomic_save_image(yc, TEXTURE_DIR / "yellow_cladding.png")
 
     # 4. 10kV HV Switchgear Cabinet Front (1024x1024)
     sw = Image.new("RGB", (1024, 1024), (72, 82, 94))
@@ -217,7 +256,7 @@ def ensure_textures() -> dict[str, str]:
         sd.line([(80, ly + 11), (840, ly + 11)], fill=(104, 116, 128), width=2)
     # Hazard kickplate
     _draw_hazard_strip(sd, 40, 916, 984, 984, step=46)
-    sw.save(TEXTURE_DIR / "switchgear_hv.png")
+    _atomic_save_image(sw, TEXTURE_DIR / "switchgear_hv.png")
 
     # 5. Thermal Monitoring Cabinet Front (1024x1024)
     tc = Image.new("RGB", (1024, 1024), (66, 78, 92))
@@ -240,7 +279,7 @@ def ensure_textures() -> dict[str, str]:
     for ly in range(470, 880, 24):
         td.rectangle([76, ly, 830, ly + 11], fill=(34, 40, 48))
     _draw_hazard_strip(td, 40, 916, 984, 984, step=46)
-    tc.save(TEXTURE_DIR / "thermal_cabinet.png")
+    _atomic_save_image(tc, TEXTURE_DIR / "thermal_cabinet.png")
 
     # 6. 42U Industrial Server Rack Front (1024x1024)
     sr = Image.new("RGB", (1024, 1024), (24, 29, 36))
@@ -268,7 +307,7 @@ def ensure_textures() -> dict[str, str]:
             px = 736 + p * 38
             srd.ellipse([px, y0 + 22, px + 14, y0 + 36], fill=(36, 215, 245) if p % 2 == 0 else (42, 228, 128))
     _draw_hazard_strip(srd, 48, 962, 976, 994, step=32)
-    sr.save(TEXTURE_DIR / "server_rack.png")
+    _atomic_save_image(sr, TEXTURE_DIR / "server_rack.png")
 
     # 7. Red Fire Hydrant Cabinet Front (512x1024)
     fc = Image.new("RGB", (512, 1024), (186, 28, 28))
@@ -287,12 +326,12 @@ def ensure_textures() -> dict[str, str]:
     fcd.text((88, 720), "应急消防阀门", font=_font(38, True), fill=(252, 252, 252))
     fcd.text((88, 778), "严禁遮挡 · 定期巡检", font=_font(28, True), fill=(255, 230, 140))
     _draw_hazard_strip(fcd, 32, 916, 480, 984, step=36)
-    fc.save(TEXTURE_DIR / "fire_cabinet.png")
+    _atomic_save_image(fc, TEXTURE_DIR / "fire_cabinet.png")
 
     # 8. Circular Pressure Gauge Texture (512x512)
     gd = Image.new("RGB", (512, 512), (38, 44, 52))
     _draw_analog_gauge(ImageDraw.Draw(gd), 256, 256, 224, 275, "管网压力", "0.78 MPa")
-    gd.save(TEXTURE_DIR / "gauge_dial.png")
+    _atomic_save_image(gd, TEXTURE_DIR / "gauge_dial.png")
 
     # 9. Wall Safety Signs (1024x512)
     def make_sign(fname, bg, border, title, sub, accent):
@@ -303,7 +342,7 @@ def ensure_textures() -> dict[str, str]:
         dr.text((76, 64), title, font=_font(56, True), fill=(20, 22, 26) if accent[0] > 180 else (248, 250, 252))
         dr.text((76, 206), sub, font=_font(44, True), fill=(24, 28, 34) if bg[0] > 180 else (238, 244, 250))
         _draw_hazard_strip(dr, 40, 404, 984, 472, step=48)
-        im.save(TEXTURE_DIR / fname)
+        _atomic_save_image(im, TEXTURE_DIR / fname)
 
     make_sign("sign_hv.png", (245, 246, 248), (22, 24, 28), "⚡ 高压配电重地 · HIGH VOLTAGE", "智能四足机器人自动巡检区 · 严禁非运维人员入内", (242, 192, 22))
     make_sign("sign_patrol.png", (18, 38, 62), (56, 189, 248), "智能无人巡检示范区 · GO2 PATROL", "配电测温 · 仪表读数 · 消防管网安全监测", (14, 116, 144))
@@ -321,7 +360,7 @@ def ensure_textures() -> dict[str, str]:
         cbd.rectangle([bx, 408, bx + (4 if bx % 16 == 0 else 2), 450], fill=(24, 24, 24))
     cbd.text((62, 354), "INDUSTRIAL", font=_font(22, True), fill=(30, 30, 30))
     cbd.text((62, 380), "PART #A-402", font=_font(18, True), fill=(60, 60, 60))
-    cb.save(TEXTURE_DIR / "cardboard_box.png")
+    _atomic_save_image(cb, TEXTURE_DIR / "cardboard_box.png")
 
     # 11. Wood pallet (512x512)
     wn = (_smooth_noise(512, 512, seed=77, scale=6) - 0.5) * 26
@@ -330,26 +369,26 @@ def ensure_textures() -> dict[str, str]:
     wpd = ImageDraw.Draw(wp)
     for y in range(0, 512, 85):
         wpd.rectangle([0, y, 512, y + 10], fill=(82, 58, 34))
-    wp.save(TEXTURE_DIR / "wood_pallet.png")
+    _atomic_save_image(wp, TEXTURE_DIR / "wood_pallet.png")
 
     # 12. Hazard stripe texture (512x512)
     hz = Image.new("RGB", (512, 512), (28, 30, 34))
     _draw_hazard_strip(ImageDraw.Draw(hz), 0, 0, 512, 512, step=64)
-    hz.save(TEXTURE_DIR / "hazard_stripe.png")
+    _atomic_save_image(hz, TEXTURE_DIR / "hazard_stripe.png")
 
     # 13. Asphalt road (1024x1024)
     an1 = _smooth_noise(1024, 1024, seed=91, scale=4)
     an2 = _smooth_noise(1024, 1024, seed=92, scale=32)
     ab = 0.55 * an1 + 0.45 * an2
     asph = np.stack([56 + ab * 34, 60 + ab * 34, 64 + ab * 34], axis=-1)
-    Image.fromarray(np.clip(asph, 35, 115).astype(np.uint8)).save(TEXTURE_DIR / "asphalt_road.png")
+    _atomic_save_image(Image.fromarray(np.clip(asph, 35, 115).astype(np.uint8)), TEXTURE_DIR / "asphalt_road.png")
 
     # 14. Concrete slab (512x512)
     csn = 0.5 * _smooth_noise(512, 512, seed=95, scale=8) + 0.5 * _smooth_noise(512, 512, seed=96, scale=32)
     cs = np.stack([152 + csn * 36, 155 + csn * 36, 158 + csn * 36], axis=-1)
     cs_img = Image.fromarray(np.clip(cs, 115, 210).astype(np.uint8))
     ImageDraw.Draw(cs_img).rectangle([4, 4, 508, 508], outline=(105, 108, 112), width=6)
-    cs_img.save(TEXTURE_DIR / "concrete_slab.png")
+    _atomic_save_image(cs_img, TEXTURE_DIR / "concrete_slab.png")
 
     # 15. Control workstation monitor screen (512x256)
     ms = Image.new("RGB", (512, 256), (10, 22, 38))
@@ -360,7 +399,7 @@ def ensure_textures() -> dict[str, str]:
         bx = 34 + i * 64
         bh = int(val * 130)
         msd.rectangle([bx, 224 - bh, bx + 40, 224], fill=(34, 211, 238) if val < 0.8 else (245, 165, 35))
-    ms.save(TEXTURE_DIR / "monitor_screen.png")
+    _atomic_save_image(ms, TEXTURE_DIR / "monitor_screen.png")
 
     # 16. Floor inspection station pad texture (512x512)
     pp = Image.new("RGB", (512, 512), (48, 66, 82))
@@ -369,9 +408,9 @@ def ensure_textures() -> dict[str, str]:
     ppd.ellipse([96, 96, 416, 416], fill=(14, 48, 64), outline=(34, 211, 238), width=14)
     ppd.text((178, 202), "巡检点", font=_font(52, True), fill=(125, 240, 255))
     ppd.text((172, 272), "INSPECT", font=_font(38, True), fill=(242, 200, 48))
-    pp.save(TEXTURE_DIR / "patrol_pad.png")
+    _atomic_save_image(pp, TEXTURE_DIR / "patrol_pad.png")
 
-    stamp_file.write_text(TEXTURE_VERSION, encoding="utf-8")
+    _atomic_write_text(stamp_file, TEXTURE_VERSION)
     return {n: str(TEXTURE_DIR / n) for n in names}
 
 
@@ -388,6 +427,7 @@ class SceneBuilder:
         self.textures = ensure_textures()
         self.materials = {}
         UsdGeom.Xform.Define(stage, "/World/Environment")
+        UsdGeom.Xform.Define(stage, "/World/Traversable")
         UsdGeom.Xform.Define(stage, "/World/Decor")
         UsdGeom.Xform.Define(stage, "/World/Looks")
 
@@ -935,9 +975,9 @@ def build_realistic_outdoor(stage):
     # Textured Industrial Concrete Inspection Ramp + Platform + Yellow Safety Handrails
     q_up = (math.cos(math.radians(-11.0) / 2), 0.0, math.sin(math.radians(-11.0) / 2), 0.0)
     q_dn = (math.cos(math.radians(11.0) / 2), 0.0, math.sin(math.radians(11.0) / 2), 0.0)
-    b.solid_box("/World/Environment/RampUp", (-2.8, 2.2, 0.34), (3.6, 2.2, 0.16), (0.52, 0.55, 0.58), roughness=0.82, collision=True, rotation=q_up)
-    b.textured_box("/World/Environment/RampPlatform", (0.1, 2.2, 0.68), (2.2, 2.2, 0.18), slab_mat, uv_scale=(1.0, 1.0))
-    b.solid_box("/World/Environment/RampDown", (2.7, 2.2, 0.34), (3.6, 2.2, 0.16), (0.52, 0.55, 0.58), roughness=0.82, collision=True, rotation=q_dn)
+    b.solid_box("/World/Traversable/RampUp", (-2.8, 2.2, 0.34), (3.6, 2.2, 0.16), (0.52, 0.55, 0.58), roughness=0.82, collision=True, rotation=q_up)
+    b.textured_box("/World/Traversable/RampPlatform", (0.1, 2.2, 0.68), (2.2, 2.2, 0.18), slab_mat, uv_scale=(1.0, 1.0))
+    b.solid_box("/World/Traversable/RampDown", (2.7, 2.2, 0.34), (3.6, 2.2, 0.16), (0.52, 0.55, 0.58), roughness=0.82, collision=True, rotation=q_dn)
     # Yellow tubular safety guardrails on the elevated platform
     for dy in (-1.05, 1.05):
         b.solid_box(f"/World/Decor/RampRail_{dy}", (0.1, 2.2 + dy, 1.38), (2.2, 0.05, 0.05), (0.94, 0.72, 0.08), metallic=0.4, collision=False)

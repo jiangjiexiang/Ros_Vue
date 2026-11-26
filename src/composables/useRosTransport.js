@@ -53,6 +53,7 @@ export function useRosTransport() {
     unsubscribe: (...args) => active.value.unsubscribe(...args),
     clientAdvertise: (...args) => active.value.clientAdvertise(...args),
     publishMessage: (...args) => active.value.publishMessage(...args),
+    callService: (...args) => active.value.callService?.(...args) ?? Promise.reject(new Error('当前传输不支持服务调用')),
     sendTwist: (...args) => active.value.sendTwist(...args),
     sendGoalPose: (...args) => active.value.sendGoalPose(...args),
     sendInitialPose: (...args) => active.value.sendInitialPose(...args),

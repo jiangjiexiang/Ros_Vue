@@ -281,8 +281,8 @@
           <span>保存后，已有执行记录将清零，任务回到待执行状态。</span>
           <div>
             <button class="mission-button" type="button" @click="goBack">取消</button>
-            <button class="mission-button" type="submit" :disabled="editorLocked">保存</button>
-            <button class="mission-button primary" type="button" :disabled="editorLocked" @click="save(true)">保存并前往执行</button>
+            <button class="mission-button" type="submit" :disabled="editorLocked || saving">{{ saving ? '保存中…' : '保存' }}</button>
+            <button class="mission-button primary" type="button" :disabled="editorLocked || saving" @click="save(true)">{{ saving ? '保存中…' : '保存并前往执行' }}</button>
           </div>
         </footer>
       </form>
@@ -315,7 +315,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['navigate', 'saved'])
 const { routeMissionId, navigate } = useMissionNavigation(props, emit)
-const { missions, storageError, saveMission: persistMission } = useMissionStore()
+const { missions, storageError, initMissionsFromServer, saveMission: persistMission } = useMissionStore()
 const { robots: configuredRobots } = useRobotStore()
 const draft = ref(createEmptyMission())
 const selectedWaypointId = ref('')
@@ -330,6 +330,7 @@ const mapSource = ref('')
 const mapMessage = ref('')
 const notFound = ref(false)
 const sourceStatus = ref('pending')
+const saving = ref(false)
 const errors = ref([])
 const newPoint = reactive({ name: '', x: 0, y: 0, yaw: 0 })
 const ROBOT_ALGORITHM_OPTIONS = {
@@ -516,20 +517,23 @@ function removeWaypoint(index) {
   }
 }
 
-function save(openExecution) {
-  if (editorLocked.value) return
+async function save(openExecution) {
+  if (editorLocked.value || saving.value) return
   updateRobot()
   updateMap()
   errors.value = validateMission(draft.value)
   if (errors.value.length) return
 
+  saving.value = true
   try {
-    const saved = persistMission(draft.value)
+    const saved = await persistMission(draft.value)
     draft.value = cloneData(saved)
     emit('saved', cloneData(saved))
     navigate(openExecution ? MISSION_PATHS.run(saved.id) : MISSION_PATHS.list, saved.id)
   } catch (error) {
     errors.value = [error.message]
+  } finally {
+    saving.value = false
   }
 }
 
@@ -553,7 +557,11 @@ async function loadMaps() {
 }
 
 watch(routeMissionId, loadDraft, { immediate: true })
+watch(missions, () => {
+  if (notFound.value) loadDraft()
+})
 onMounted(() => {
+  initMissionsFromServer()
   if (!draft.value.robotId && robotOptions.value.length) {
     draft.value.robotId = robotOptions.value[0].id
     updateRobot()

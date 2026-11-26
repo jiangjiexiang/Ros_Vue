@@ -13,10 +13,12 @@ const errorMessage = ref('')
 
 // ======================== 内部变量 ========================
 let ws = null
+let connectionGeneration = 0
 let nextClientChannelId = 1
 let nextSubscriptionId = 1
 const subscriptionCallbacks = new Map() // subscriptionId → callback(parsedJSON)
-const subscriptionIdToChannelId = new Map() // subscriptionId → channelId
+const subscriptionTopics = new Map() // subscriptionId → topic，保留自动重订阅意图
+const subscriptionIdToChannelId = new Map() // subscriptionId → 当前有效 channelId
 const clientChannels = new Map()        // clientChannelId → {topic, ...}
 
 // ======================== 连接管理 ========================
@@ -26,41 +28,54 @@ const clientChannels = new Map()        // clientChannelId → {topic, ...}
  * @param {string} url - WebSocket URL, 例如 ws://localhost:8765
  */
 function connect(url) {
-    if (ws) {
-        disconnect()
-    }
+    if (ws) disconnect()
 
     connectionState.value = 'connecting'
     errorMessage.value = ''
+    const generation = ++connectionGeneration
 
     try {
-        ws = new WebSocket(url, ['foxglove.sdk.v1', 'foxglove.websocket.v1'])
-        ws.binaryType = 'arraybuffer'
+        const socket = new WebSocket(url, ['foxglove.sdk.v1', 'foxglove.websocket.v1'])
+        socket.binaryType = 'arraybuffer'
+        ws = socket
+        const isCurrentConnection = () => ws === socket && connectionGeneration === generation
 
-        ws.onopen = () => {
+        socket.onopen = () => {
+            if (!isCurrentConnection()) return
             console.log('[Foxglove] WebSocket 已连接，等待 serverInfo...')
         }
 
-        ws.onclose = (e) => {
+        socket.onclose = (e) => {
+            if (!isCurrentConnection()) return
             console.log('[Foxglove] WebSocket 已断开:', e.code, e.reason)
+            ws = null
             connectionState.value = 'disconnected'
             cleanup()
         }
 
-        ws.onerror = (e) => {
+        socket.onerror = (e) => {
+            if (!isCurrentConnection()) return
             console.error('[Foxglove] WebSocket 错误:', e)
             connectionState.value = 'error'
             errorMessage.value = '连接失败，请检查地址和 foxglove_bridge 是否运行'
         }
 
-        ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
+            if (!isCurrentConnection()) return
             if (typeof event.data === 'string') {
-                handleJsonMessage(JSON.parse(event.data))
+                try {
+                    handleJsonMessage(JSON.parse(event.data))
+                } catch (err) {
+                    console.error('[Foxglove] JSON 解析失败:', err)
+                    errorMessage.value = '收到无法解析的 Foxglove 消息'
+                }
             } else if (event.data instanceof ArrayBuffer) {
                 handleBinaryMessage(event.data)
             }
         }
     } catch (err) {
+        if (connectionGeneration !== generation) return
+        ws = null
         connectionState.value = 'error'
         errorMessage.value = err.message
     }
@@ -70,10 +85,10 @@ function connect(url) {
  * 断开连接
  */
 function disconnect() {
-    if (ws) {
-        ws.close()
-        ws = null
-    }
+    connectionGeneration++
+    const socket = ws
+    ws = null
+    if (socket) socket.close()
     cleanup()
     connectionState.value = 'disconnected'
 }
@@ -81,6 +96,7 @@ function disconnect() {
 function cleanup() {
     availableChannels.clear()
     subscriptionCallbacks.clear()
+    subscriptionTopics.clear()
     subscriptionIdToChannelId.clear()
     clientChannels.clear()
     nextClientChannelId = 1
@@ -125,24 +141,53 @@ function handleServerInfo(msg) {
     window.dispatchEvent(new CustomEvent('foxglove:connected', { detail: msg }))
 }
 
+function sendSubscription(subscriptionId, channelId) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    try {
+        ws.send(JSON.stringify({
+            op: 'subscribe',
+            subscriptions: [{ id: subscriptionId, channelId }]
+        }))
+        return true
+    } catch (err) {
+        console.error('[Foxglove] 订阅发送失败:', err)
+        return false
+    }
+}
+
+function restoreSubscriptions(channel) {
+    for (const [subId, topic] of subscriptionTopics) {
+        if (topic !== channel.topic || subscriptionIdToChannelId.has(subId)) continue
+        if (sendSubscription(subId, channel.id)) {
+            subscriptionIdToChannelId.set(subId, channel.id)
+            console.log(`[Foxglove] 已重新订阅 ${topic} (subId=${subId}, channelId=${channel.id})`)
+        }
+    }
+}
+
 function handleAdvertise(msg) {
-    if (!msg.channels) return
+    if (!Array.isArray(msg.channels)) return
     for (const ch of msg.channels) {
         availableChannels.set(ch.id, ch)
+        restoreSubscriptions(ch)
         console.log(`[Foxglove] 话题: ${ch.topic}, 编码: ${ch.encoding}, 类型: ${ch.schemaName}`)
     }
     console.log(`[Foxglove] 收到 ${msg.channels.length} 个话题频道`)
-    // 触发事件通知
     window.dispatchEvent(new CustomEvent('foxglove:channels', {
         detail: Array.from(availableChannels.values())
     }))
 }
 
 function handleUnadvertise(msg) {
-    if (!msg.channelIds) return
-    for (const id of msg.channelIds) {
-        availableChannels.delete(id)
+    if (!Array.isArray(msg.channelIds)) return
+    const removed = new Set(msg.channelIds)
+    for (const id of removed) availableChannels.delete(id)
+    for (const [subId, channelId] of subscriptionIdToChannelId) {
+        if (removed.has(channelId)) subscriptionIdToChannelId.delete(subId)
     }
+    window.dispatchEvent(new CustomEvent('foxglove:channels_update', {
+        detail: Array.from(availableChannels.values())
+    }))
 }
 
 // ======================== 二进制消息处理 ========================
@@ -153,6 +198,7 @@ function handleUnadvertise(msg) {
  *   [opcode: 1 byte] [subscriptionId: uint32 LE] [timestamp: uint64 LE] [payload: remaining]
  */
 function handleBinaryMessage(buffer) {
+    if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 13) return
     const view = new DataView(buffer)
     const opcode = view.getUint8(0)
 
@@ -630,17 +676,13 @@ function subscribe(topicName, callback) {
 
     const subId = nextSubscriptionId++
     subscriptionCallbacks.set(subId, callback)
-    subscriptionIdToChannelId.set(subId, channelId)
-
-    const msg = {
-        op: 'subscribe',
-        subscriptions: [{
-            id: subId,
-            channelId
-        }]
+    subscriptionTopics.set(subId, topicName)
+    if (!sendSubscription(subId, channelId)) {
+        subscriptionCallbacks.delete(subId)
+        subscriptionTopics.delete(subId)
+        return null
     }
-
-    ws.send(JSON.stringify(msg))
+    subscriptionIdToChannelId.set(subId, channelId)
     console.log(`[Foxglove] 已订阅 ${topicName} (subId=${subId}, channelId=${channelId})`)
     return subId
 }
@@ -651,13 +693,18 @@ function subscribe(topicName, callback) {
  */
 function unsubscribe(subscriptionId) {
     subscriptionCallbacks.delete(subscriptionId)
+    subscriptionTopics.delete(subscriptionId)
     subscriptionIdToChannelId.delete(subscriptionId)
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            op: 'unsubscribe',
-            subscriptionIds: [subscriptionId]
-        }))
+        try {
+            ws.send(JSON.stringify({
+                op: 'unsubscribe',
+                subscriptionIds: [subscriptionId]
+            }))
+        } catch (err) {
+            console.error('[Foxglove] 取消订阅发送失败:', err)
+        }
     }
 }
 
@@ -673,6 +720,10 @@ function unsubscribe(subscriptionId) {
 function clientAdvertise(topic, schemaName, encoding = 'json') {
     if (!serverCapabilities.value.includes('clientPublish')) {
         console.warn('[Foxglove] 服务器不支持 clientPublish 能力')
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn('[Foxglove] WebSocket 未连接，无法声明发布话题')
+        return null
     }
 
     const channelId = nextClientChannelId++
@@ -702,8 +753,8 @@ function clientAdvertise(topic, schemaName, encoding = 'json') {
  * @param {object} data - 消息对象, 会被 JSON.stringify
  */
 function publishMessage(channelId, data) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return
+    if (!ws || ws.readyState !== WebSocket.OPEN || !clientChannels.has(channelId)) {
+        return false
     }
 
     const jsonStr = JSON.stringify(data)
@@ -719,7 +770,13 @@ function publishMessage(channelId, data) {
     const payload = new Uint8Array(buffer, 5)
     payload.set(jsonBytes)
 
-    ws.send(buffer)
+    try {
+        ws.send(buffer)
+        return true
+    } catch (err) {
+        console.error('[Foxglove] 消息发送失败:', err)
+        return false
+    }
 }
 
 /**
@@ -769,7 +826,7 @@ function sendTwist(channelId, linearX, angularZ) {
         linear: { x: linearX, y: 0.0, z: 0.0 },
         angular: { x: 0.0, y: 0.0, z: angularZ }
     }
-    publishMessage(channelId, twist)
+    return publishMessage(channelId, twist)
 }
 
 /**

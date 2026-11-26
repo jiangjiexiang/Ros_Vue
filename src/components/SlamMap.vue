@@ -35,6 +35,7 @@
         @touchstart.passive="onTouchStart"
         @touchmove.prevent="onTouchMove"
         @touchend="onMouseUp"
+        @touchcancel="onTouchCancel"
         @dblclick="onDblClick"
         :style="{ cursor: isSettingPose || isNavigating || multiPointMode ? 'crosshair' : (isDragging ? 'grabbing' : 'grab') }"
       >
@@ -116,7 +117,7 @@
 
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
@@ -162,6 +163,7 @@ const poseDrag = ref(null)    // { x, y } 拖动尾端 (世界坐标)
 const settingMsg = ref('')
 const arriveMsg = ref('')
 const singleGoalReachedNotified = ref(false)
+let arriveTimer = null
 
 const emit = defineEmits(['goal-set', 'waypoint-add', 'waypoint-reached', 'initial-pose-set', 'update:isSettingPose'])
 const waypointReachThreshold = 0.10
@@ -229,7 +231,7 @@ async function confirmSave() {
   isSaving.value = true
   saveMsg.value = ''
   try {
-    const res = await fetch(`${API_BASE}/save_map`, {
+    const res = await apiFetch(`${API_BASE}/save_map`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mapName: name })
@@ -645,7 +647,15 @@ function lookupTf(fromFrame, toFrame) {
 
 // 处理 TF 数据：缓存所有变换段，然后组合查询
 watch(() => props.tfData, (newData) => {
-  if (!newData || !newData.transforms) return
+  if (!newData) {
+    for (const key of Object.keys(tfTree)) delete tfTree[key]
+    robotPose.value = null
+    sensorOffset.value = { x: 0, y: 0, yaw: 0 }
+    laserPoints.value = []
+    requestDraw()
+    return
+  }
+  if (!newData.transforms) return
   
   // 1. 将所有收到的 TF 存入树
   for (const tf of newData.transforms) {
@@ -680,7 +690,12 @@ watch(() => props.tfData, (newData) => {
 
 // 处理雷达数据：计算打击点坐标
 watch(() => props.scanData, (newData) => {
-  if (!newData || !newData.ranges) return
+  if (!newData) {
+    laserPoints.value = []
+    requestDraw()
+    return
+  }
+  if (!newData.ranges) return
   
   const points = []
   const pose = robotPose.value || { x: 0, y: 0, yaw: 0 }
@@ -840,7 +855,11 @@ function onDblClick(e) {
   if (props.multiPointMode) {
     emit('waypoint-add', { x: wx, y: wy })
   } else {
+    if (arriveTimer) clearTimeout(arriveTimer)
+    arriveTimer = null
+    arriveMsg.value = ''
     singleGoalReachedNotified.value = false
+    navPathPoints.value = []
     goalPoint.value = { x: wx, y: wy }
     emit('goal-set', { x: wx, y: wy })
   }
@@ -899,6 +918,13 @@ function onTouchMove(e) {
   }
 }
 
+function onTouchCancel() {
+  isDragging = false
+  poseAnchor.value = null
+  poseDrag.value = null
+  requestDraw()
+}
+
 function handleResize() {
   draw()
 }
@@ -910,9 +936,35 @@ watch(shouldShowCanvas, (visible) => {
   })
 })
 
+watch(() => props.connected, (connected) => {
+  if (connected) return
+  offscreenCanvas = null
+  mapInfo.value = null
+  mapFitPending = true
+  navPathPoints.value = []
+  goalPoint.value = null
+  robotPose.value = null
+  laserPoints.value = []
+  sensorOffset.value = { x: 0, y: 0, yaw: 0 }
+  poseAnchor.value = null
+  poseDrag.value = null
+  reachedWaypointKey.value = ''
+  singleGoalReachedNotified.value = false
+  arriveMsg.value = ''
+  if (arriveTimer) clearTimeout(arriveTimer)
+  arriveTimer = null
+  for (const key of Object.keys(tfTree)) delete tfTree[key]
+  requestDraw()
+})
+
 watch(() => props.mapData, (newData) => {
   if (newData && newData.info && newData.data) {
     updateOffscreenCanvas(newData)
+  } else {
+    offscreenCanvas = null
+    mapInfo.value = null
+    mapFitPending = true
+    requestDraw()
   }
 }, { deep: true })
 
@@ -968,7 +1020,11 @@ watch(() => [props.isNavigating, props.multiPointMode, goalPoint.value, robotPos
     goalPoint.value = null
     requestDraw()
     arriveMsg.value = '已到达导航点'
-    setTimeout(() => { arriveMsg.value = '' }, 2500)
+    if (arriveTimer) clearTimeout(arriveTimer)
+    arriveTimer = setTimeout(() => {
+      arriveMsg.value = ''
+      arriveTimer = null
+    }, 2500)
   }
 }, { deep: true })
 
@@ -985,6 +1041,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  if (arriveTimer) clearTimeout(arriveTimer)
 })
 
 defineExpose({

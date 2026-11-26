@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 
 export const CONTROL_DEFAULTS = {
   max_linear_speed: 5,
@@ -73,7 +73,7 @@ async function loadRuntimeConfig() {
   loading.value = true
   loadError.value = ''
   try {
-    const res = await fetch(`${API_BASE}/runtime_config`)
+    const res = await apiFetch(`${API_BASE}/runtime_config`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     applyRuntimeConfig(data)

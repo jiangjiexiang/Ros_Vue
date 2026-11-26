@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Nav2 人工接管辅助节点：
-- 监听 /manual_cmd_vel，人工 WASD/摇杆接管时立即向 Nav2 navigate_to_pose 发送 CancelGoal 并清空 /plan
+- 监听 /manual_cmd_vel，人工接管或零速停止时立即取消 navigate_to_pose 并清空 /plan
 """
 
 import time
@@ -29,19 +29,29 @@ class Nav2BridgeHelper(Node):
         self.get_logger().info(f"Nav2 人工接管辅助节点已启动，命名空间: '{namespace or '/'}'")
 
     def on_manual_cmd_vel(self, msg: Twist):
-        has_motion = abs(msg.linear.x) > 1e-3 or abs(msg.linear.y) > 1e-3 or abs(msg.angular.z) > 1e-3
-        if not has_motion:
-            return
+        empty_plan = RosPath()
+        empty_plan.header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
+        self.plan_pub.publish(empty_plan)
+
         now = time.monotonic()
-        if now - self.last_cancel_time < 0.5:
+        if now - self.last_cancel_time < 0.5 or not self.cancel_client.service_is_ready():
             return
         self.last_cancel_time = now
-        if self.cancel_client.service_is_ready():
-            self.cancel_client.call_async(CancelGoal.Request())
-            empty_plan = RosPath()
-            empty_plan.header = Header(stamp=self.get_clock().now().to_msg(), frame_id="map")
-            self.plan_pub.publish(empty_plan)
-            self.get_logger().info("检测到人工控制指令，已取消 Nav2 当前导航目标")
+        future = self.cancel_client.call_async(CancelGoal.Request())
+        future.add_done_callback(self.on_cancel_result)
+
+    def on_cancel_result(self, future):
+        try:
+            error = future.exception()
+            if error is not None:
+                raise error
+            response = future.result()
+            if response.return_code != CancelGoal.Response.ERROR_NONE:
+                self.get_logger().warning(f"取消 Nav2 目标失败，返回码: {response.return_code}")
+            else:
+                self.get_logger().info("人工控制或停止指令已取消 Nav2 当前导航目标并清空路径")
+        except Exception as err:
+            self.get_logger().warning(f"取消 Nav2 目标请求失败: {err}")
 
 
 def main():

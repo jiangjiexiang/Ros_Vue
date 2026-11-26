@@ -31,7 +31,7 @@
           v-else-if="activeScene !== scene.id"
           class="btn btn-secondary"
           :disabled="Boolean(loadingScene)"
-          @click="activeScene = scene.id"
+          @click="selectScene(scene.id)"
         >
           查看遥测与控制
         </button>
@@ -49,6 +49,7 @@
 
     <div v-if="activeScene" class="simulation-teleoperation">
       <JoystickControl
+        ref="joystickRef"
         :connected="Boolean(activeScene)"
         :maxLinearSpeed="controlConfig.max_linear_speed ?? 5"
         :maxAngularSpeed="controlConfig.max_angular_speed ?? 1.0"
@@ -82,7 +83,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import JoystickControl from './JoystickControl.vue'
 import UiIcon from './UiIcon.vue'
 
@@ -100,6 +101,7 @@ const scenes = [
 
 const activeScene = ref('')
 const activeScenes = ref([])
+const joystickRef = ref(null)
 const loadingScene = ref('')
 const errorMsg = ref('')
 const controlError = ref('')
@@ -110,7 +112,10 @@ const telemetry = ref({
 })
 let statusTimer = null
 let telemetryTimer = null
-let commandPending = false
+let queuedCommand = null
+let commandWorker = null
+let suppressJoystickEvents = false
+let disposed = false
 
 const lidarText = computed(() => {
   const pointcloud = telemetry.value.pointcloud
@@ -130,7 +135,7 @@ function sceneQuery(id) {
 }
 
 async function request(path) {
-  const res = await fetch(`${API_BASE}${path}`, { method: 'POST' })
+  const res = await apiFetch(`${API_BASE}${path}`, { method: 'POST' })
   const data = await res.json()
   if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`)
 }
@@ -138,13 +143,13 @@ async function request(path) {
 async function checkStatus() {
   try {
     const statuses = await Promise.all(scenes.map(async (scene) => {
-      const res = await fetch(`${API_BASE}/task_status/simulation_${scene.id}`)
+      const res = await apiFetch(`${API_BASE}/task_status/simulation_${scene.id}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return (await res.json()).isRunning ? scene.id : ''
     }))
     activeScenes.value = statuses.filter(Boolean)
     if (!activeScenes.value.includes(activeScene.value)) {
-      activeScene.value = activeScenes.value[0] || ''
+      await changeActiveScene(activeScenes.value[0] || '')
     }
   } catch (err) {
     console.error('获取仿真状态失败:', err)
@@ -152,39 +157,91 @@ async function checkStatus() {
 }
 
 async function updateTelemetry() {
-  if (!activeScene.value) return
+  const scene = activeScene.value
+  if (!scene) return
   try {
-    const res = await fetch(`${API_BASE}/simulation/status${sceneQuery(activeScene.value)}`)
+    const res = await apiFetch(`${API_BASE}/simulation/status${sceneQuery(scene)}`)
     if (!res.ok) return
     const data = await res.json()
-    if (data.ready) {
+    if (data.ready && !disposed && scene === activeScene.value) {
       telemetry.value = data
       controlError.value = ''
     }
   } catch {}
 }
 
-async function sendVelocity({ linearX, angularZ }) {
-  if (!activeScene.value || commandPending) return
-  commandPending = true
+function enqueueVelocity(scene, { linearX, angularZ }) {
+  if (!scene) return Promise.resolve(false)
+  const isZero = linearX === 0 && angularZ === 0
+  if (queuedCommand && queuedCommand.linearX === 0 && queuedCommand.angularZ === 0 && !isZero) {
+    return Promise.resolve(false)
+  }
+  if (queuedCommand) queuedCommand.resolve(false)
+  return new Promise((resolve) => {
+    queuedCommand = { scene, linearX, angularZ, resolve }
+    void drainVelocityQueue()
+  })
+}
+
+async function drainVelocityQueue() {
+  if (commandWorker) return commandWorker
+  commandWorker = (async () => {
+    while (queuedCommand) {
+      const command = queuedCommand
+      queuedCommand = null
+      try {
+        const res = await apiFetch(`${API_BASE}/simulation/velocity${sceneQuery(command.scene)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ linearX: command.linearX, angularZ: command.angularZ })
+        })
+        const data = await res.json()
+        if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`)
+        if (!disposed) controlError.value = ''
+        command.resolve(true)
+      } catch (err) {
+        if (!disposed) controlError.value = err.message || '仿真控制失败'
+        command.resolve(false)
+      }
+    }
+  })()
   try {
-    const res = await fetch(`${API_BASE}/simulation/velocity${sceneQuery(activeScene.value)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ linearX, angularZ })
-    })
-    const data = await res.json()
-    if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`)
-    controlError.value = ''
-  } catch (err) {
-    controlError.value = err.message || '仿真控制失败'
+    await commandWorker
   } finally {
-    commandPending = false
+    commandWorker = null
+    if (queuedCommand) void drainVelocityQueue()
   }
 }
 
+function sendVelocity(command) {
+  if (suppressJoystickEvents) return Promise.resolve(false)
+  return enqueueVelocity(activeScene.value, command)
+}
+
 function stopMotion() {
-  sendVelocity({ linearX: 0, angularZ: 0 })
+  if (suppressJoystickEvents) return
+  void sendVelocity({ linearX: 0, angularZ: 0 })
+}
+
+function resetJoystick() {
+  suppressJoystickEvents = true
+  try { joystickRef.value?.reset() } finally { suppressJoystickEvents = false }
+}
+
+let sceneTransition = Promise.resolve()
+function changeActiveScene(id) {
+  sceneTransition = sceneTransition.then(async () => {
+    const previous = activeScene.value
+    if (previous === id) return
+    resetJoystick()
+    if (previous) await enqueueVelocity(previous, { linearX: 0, angularZ: 0 })
+    if (!disposed) activeScene.value = id
+  })
+  return sceneTransition
+}
+
+function selectScene(id) {
+  void changeActiveScene(id)
 }
 
 async function startScene(id) {
@@ -193,7 +250,7 @@ async function startScene(id) {
   try {
     await request(`/run_task/simulation_${id}`)
     if (!activeScenes.value.includes(id)) activeScenes.value.push(id)
-    activeScene.value = id
+    await changeActiveScene(id)
   } catch (err) {
     errorMsg.value = err.message || '无法启动仿真场景'
   } finally {
@@ -206,10 +263,13 @@ async function stopScene(id) {
   loadingScene.value = id
   errorMsg.value = ''
   try {
-    if (activeScene.value === id) await sendVelocity({ linearX: 0, angularZ: 0 })
+    if (activeScene.value === id) {
+      resetJoystick()
+      await enqueueVelocity(id, { linearX: 0, angularZ: 0 })
+    }
     await request(`/stop_task/simulation_${id}`)
     activeScenes.value = activeScenes.value.filter((scene) => scene !== id)
-    if (activeScene.value === id) activeScene.value = activeScenes.value[0] || ''
+    if (activeScene.value === id) await changeActiveScene(activeScenes.value[0] || '')
   } catch (err) {
     errorMsg.value = err.message || '无法停止仿真场景'
   } finally {
@@ -228,9 +288,11 @@ watch(activeScene, (value) => {
 }, { immediate: true })
 
 onUnmounted(() => {
+  disposed = true
   if (statusTimer) clearInterval(statusTimer)
   if (telemetryTimer) clearInterval(telemetryTimer)
-  stopMotion()
+  resetJoystick()
+  if (activeScene.value) void enqueueVelocity(activeScene.value, { linearX: 0, angularZ: 0 })
 })
 </script>
 

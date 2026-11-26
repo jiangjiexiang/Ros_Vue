@@ -69,7 +69,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import SimulationControl from '../components/SimulationControl.vue'
 import UiIcon from '../components/UiIcon.vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import { useRobotStore } from '../stores/robotStore.js'
 import { useRuntimeConfigStore } from '../stores/runtimeConfigStore.js'
 import { useRosSessionStore } from '../stores/rosSessionStore.js'
@@ -106,7 +106,7 @@ const formattedLogs = computed(() => (
 
 async function fetchLogs() {
   try {
-    const res = await fetch(`${API_BASE}/tasks/logs/${encodeURIComponent(selectedLogId.value)}`)
+    const res = await apiFetch(`${API_BASE}/tasks/logs/${encodeURIComponent(selectedLogId.value)}`)
     if (!res.ok) return
     const data = await res.json()
     logs.value = data.logs || []
@@ -115,11 +115,15 @@ async function fetchLogs() {
   }
 }
 
-function connectSimulationWorkspace() {
-  const simRobot = ensureSimulationRobot(activeScene.value || 'indoor')
-  switchRobot(simRobot, { reconnect: true })
-  showToast(`已切换至「${simRobot.name}」并尝试连接`, 'success')
-  router.push('/inspection')
+async function connectSimulationWorkspace() {
+  try {
+    const simRobot = await ensureSimulationRobot(activeScene.value || 'indoor')
+    switchRobot(simRobot, { reconnect: true })
+    showToast(`已切换至「${simRobot.name}」并尝试连接`, 'success')
+    router.push('/inspection')
+  } catch (error) {
+    showToast(error.message || '仿真机器狗配置保存失败', 'error')
+  }
 }
 
 watch(activeScene, (scene) => {

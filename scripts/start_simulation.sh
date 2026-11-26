@@ -5,6 +5,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${ISAACLAB_PYTHON:-${HOME}/miniconda3/envs/env_isaaclab/bin/python}"
 SCENE="${1:-indoor}"
 export DISPLAY="${DISPLAY:-:0}"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-88}"
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+unset FASTRTPS_DEFAULT_PROFILES_FILE
 PYTHON_HOME="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"
 if [[ -f "$PYTHON_HOME/lib/libstdc++.so.6" ]]; then
     export LD_PRELOAD="$PYTHON_HOME/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"

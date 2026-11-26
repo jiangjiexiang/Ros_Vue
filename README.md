@@ -1,4 +1,4 @@
-# 四足巡检机器狗平台
+# QuadPatrol · 四足智巡平台
 
 面向工业巡检场景的四足机器狗智能管控平台（Vue 3 + Three.js + Express + ROS 2 Humble + FAST-LIO + Nav2 + Isaac Sim），集成 3D/2D 实时地图、定点与多点自主导航、巡检任务编排与执行、巡检报告与告警溯源、多机器狗接入及三大高写实 GPU 工业仿真环境。
 
@@ -32,7 +32,7 @@ docker exec -it ros2-humble-dev bash
 进入容器后手动启动：
 
 ```bash
-cd /root/ros2_ws/RobotConsole
+cd /root/ros2_ws/QuadPatrol
 npm ci
 bash scripts/start_console.sh
 ```
@@ -74,6 +74,20 @@ FAST-LIO 接入默认点云为 `/points`、IMU 为 `/imu`；常见输出为 `/Od
 
 前端地址默认无需设置。如果后端或 Foxglove 不在本机，修改 `src/config.js` 即可。
 
+### 后端绑定与 API 认证
+
+后端默认只监听 `127.0.0.1`。需要监听非 loopback 地址时必须同时设置 `HOST` 和非空 `API_TOKEN`，否则后端拒绝启动，例如：
+
+```bash
+HOST=0.0.0.0 API_TOKEN='replace-with-a-secret' bash scripts/start_console.sh
+```
+
+开发服务器的 `/api` 代理会在 Node.js 进程内把 `API_TOKEN` 注入 `Authorization: Bearer` 请求头；该变量不会进入前端 bundle，也不要把它配置成 `VITE_API_TOKEN`。生产环境若浏览器需要直接访问非同源、启用令牌的 API，前端 `apiFetch` 需要通过 `VITE_API_TOKEN` 提供令牌；这种构建变量及其令牌对浏览器用户可见，应仅使用权限受限的专用令牌。默认 loopback 模式不需要令牌。
+
+`POST /api/navigation/speed_limits` 接收 `{scene,maxLinearSpeed,maxAngularSpeed}`，设置 RPP 的 `FollowPath.desired_linear_vel`、`FollowPath.rotate_to_heading_angular_vel`，并设置对应 `velocity_smoother` 的 `max_velocity=[linear,0.0,angular]`、`min_velocity=[-linear,0.0,-angular]` 作为最终线/角速度硬上限；失败会回滚并重读校验全部 RPP 与 smoother 参数。`POST /api/cancel_navigation` 接收 `{scene,namespace?}`，等待对应 `navigate_to_pose` 的 `CancelGoal` 服务返回真实结果。
+
+机器人、任务、记录和告警集合 GET 返回 `{hasData,items,version}`；PUT 接收 `{items,version}` 并以 `{items,version}` 原子持久化。旧版纯数组文件按 version 0 读取，首次保存自动迁移；缺 version 的旧客户端仍可写入，并发覆盖冲突返回 409 和最新数据。
+
 ## 页面与多机器人
 
 左侧导航包含七个页面：
@@ -93,6 +107,21 @@ FAST-LIO 接入默认点云为 `/points`、IMU 为 `/imu`；常见输出为 `/Od
 机器人配置同时保存在后端 `data/robots.json` 和当前浏览器的 `localStorage`。每台机器人支持独立局域网 IP / 主机名、端口、通信协议和可选话题命名空间，例如命名空间为 `robot2` 时，`/scan` 会转换为 `/robot2/scan`。平台预置室内、仓库、户外三条 3D 仿真狗，均使用 FAST-LIO。
 
 通信支持 Foxglove（默认端口 `8765`）、ROS 原生 `rosbridge_server`（默认端口 `9090`）和自研 DogLink。三条仿真狗使用 DogLink，统一网关进程分别监听 `8770`、`8771`、`8772`，各连接只订阅对应场景命名空间的话题。
+
+DogLink 同时作为标准 `ament_python` ROS 2 功能包维护，源码位于 `ros_packages/doglink`。协议与序列化、WebSocket 传输、ROS 订阅适配分别位于 `protocol.py`、`serializers.py`、`websocket.py` 和 `ros_adapter.py`，线上协议版本保持为 1。未构建功能包时，现有启动脚本会直接从源码运行；构建后也可以使用标准 ROS 命令：
+
+```bash
+mkdir -p ~/doglink_ws/src
+ln -s "$PWD/ros_packages/doglink" ~/doglink_ws/src/doglink
+cd ~/doglink_ws
+colcon build --packages-select doglink
+source install/setup.bash
+ros2 run doglink gateway_node
+# 或使用 YAML 配置和 Launch
+ros2 launch doglink doglink.launch.py
+```
+
+默认监听 `127.0.0.1:8768`；远程部署需显式设置监听地址并在外层配置 TLS 和访问认证。可通过 `config/doglink.yaml` 或 `--ros-args -p host:=... -p port:=...` 修改参数。
 
 当前为一个活动连接：切换机器人会断开上一台并清空其地图与遥测，再连接新机器人，避免不同机器人的数据混在同一地图中。
 

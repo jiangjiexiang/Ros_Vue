@@ -280,7 +280,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import { TOPIC_DEFAULTS } from '../stores/runtimeConfigStore.js'
 import { useRosSessionStore } from '../stores/rosSessionStore.js'
 import { showToast } from '../stores/toastStore.js'
@@ -398,7 +398,7 @@ function applyConfig(config) {
 }
 
 async function request(path, options) {
-  const response = await fetch(`${API_BASE}${path}`, options)
+  const response = await apiFetch(`${API_BASE}${path}`, options)
   let data = {}
   try { data = await response.json() } catch {}
   if (!response.ok) throw new Error(data.error || `请求失败（HTTP ${response.status}）`)

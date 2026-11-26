@@ -60,7 +60,7 @@
 
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import UiIcon from './UiIcon.vue'
 
 const props = defineProps({
@@ -81,7 +81,7 @@ let statusTimer = null
 async function checkStatus() {
   try {
     const qs = props.simulationScene ? `?scene=${encodeURIComponent(props.simulationScene)}` : ''
-    const res = await fetch(`${API_BASE}/mapping_status${qs}`)
+    const res = await apiFetch(`${API_BASE}/mapping_status${qs}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     isMapping.value = data.isRunning
@@ -97,7 +97,7 @@ async function startMapping() {
   errorMsg.value = ''
   saveNotice.value = ''
   try {
-    const res = await fetch(`${API_BASE}/start_mapping`, {
+    const res = await apiFetch(`${API_BASE}/start_mapping`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scene: props.simulationScene || '' })
@@ -118,7 +118,7 @@ async function stopMapping() {
   isLoading.value = true
   errorMsg.value = ''
   try {
-    const res = await fetch(`${API_BASE}/stop_mapping`, {
+    const res = await apiFetch(`${API_BASE}/stop_mapping`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scene: props.simulationScene || '' })
@@ -140,7 +140,7 @@ async function restartMapping() {
   saveNotice.value = ''
   try {
     emit('mappingRestarted')
-    const res = await fetch(`${API_BASE}/restart_mapping`, {
+    const res = await apiFetch(`${API_BASE}/restart_mapping`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scene: props.simulationScene || '' })
@@ -171,13 +171,13 @@ async function saveMap() {
     const pts = props.getMapPoints ? props.getMapPoints() : []
     let res
     if (pts.length >= 9) {
-      res = await fetch(`${API_BASE}/save_slam_map`, {
+      res = await apiFetch(`${API_BASE}/save_slam_map`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mapName: name, points: pts })
       })
     } else {
-      res = await fetch(`${API_BASE}/save_map`, {
+      res = await apiFetch(`${API_BASE}/save_map`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mapName: name })

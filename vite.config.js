@@ -13,7 +13,14 @@ export default defineConfig({
         proxy: {
             '/api': {
                 target: process.env.BACKEND_URL || 'http://127.0.0.1:3000',
-                changeOrigin: true
+                changeOrigin: true,
+                configure(proxy) {
+                    proxy.on('proxyReq', (proxyReq) => {
+                        if (process.env.API_TOKEN) {
+                            proxyReq.setHeader('Authorization', `Bearer ${process.env.API_TOKEN}`)
+                        }
+                    })
+                }
             },
             '/ws/doglink-indoor': {
                 target: 'ws://127.0.0.1:8770',

@@ -79,9 +79,9 @@ export function createWaypoint(input = {}, index = 0) {
     id: input.id || createId('point'),
     name: input.name || `巡检点 ${index + 1}`,
     pose: {
-      x: numberOr(input.pose?.x ?? input.x),
-      y: numberOr(input.pose?.y ?? input.y),
-      yaw: numberOr(input.pose?.yaw ?? input.yaw)
+      x: nullableNumber(input.pose?.x ?? input.x),
+      y: nullableNumber(input.pose?.y ?? input.y),
+      yaw: nullableNumber(input.pose?.yaw ?? input.yaw)
     },
     actions,
     actionSettings: createActionSettings(input.actionSettings),
@@ -97,6 +97,7 @@ export function createRunState(input = {}) {
     completedVisits: Math.max(0, Math.round(numberOr(input.completedVisits))),
     phase: input.phase || 'idle',
     elapsedSeconds: Math.max(0, Math.round(numberOr(input.elapsedSeconds))),
+    retryCount: Math.max(0, Math.round(numberOr(input.retryCount))),
     startedAt: input.startedAt || null,
     pausedAt: input.pausedAt || null,
     completedAt: input.completedAt || null,
@@ -168,11 +169,12 @@ export function validateMission(mission) {
   mission.waypoints?.forEach((point, index) => {
     const label = point.name?.trim() || `巡检点 ${index + 1}`
     if (!point.name?.trim()) errors.push(`第 ${index + 1} 个巡检点需要名称。`)
-    if (!['x', 'y', 'yaw'].every((key) => {
+    const invalidPoseKeys = ['x', 'y', 'yaw'].filter((key) => {
       const value = point.pose?.[key]
-      return value !== '' && value != null && Number.isFinite(Number(value))
-    })) {
-      errors.push(`${label} 的坐标和朝向必须是有效数字。`)
+      return value === '' || value == null || !Number.isFinite(Number(value))
+    })
+    if (invalidPoseKeys.length) {
+      errors.push(`${label} 的坐标/朝向缺失或不是有效数字（${invalidPoseKeys.join('、')}），请补充完整。`)
     }
     if (!Number.isInteger(Number(point.dwellSeconds)) || point.dwellSeconds < 1 || point.dwellSeconds > 600) {
       errors.push(`${label} 的停留时间应为 1～600 秒的整数。`)

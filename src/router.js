@@ -66,7 +66,7 @@ const router = createRouter({
 })
 
 router.afterEach((to) => {
-  document.title = `${to.meta.title || '巡检总览'} · 四足巡检平台`
+  document.title = `${to.meta.title || '巡检总览'} · QuadPatrol 四足智巡平台`
 })
 
 export default router

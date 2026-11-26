@@ -130,15 +130,15 @@
               </div>
 
               <div class="control-buttons">
-                <button v-if="mission.status === 'pending'" class="mission-button primary" :disabled="!mission.waypoints.length" @click="startExecution">
-                  <UiIcon name="play" :size="14" />开始任务
+                <button v-if="mission.status === 'pending'" class="mission-button primary" :disabled="!mission.waypoints.length || startingExecution" @click="startExecution">
+                  <UiIcon name="play" :size="14" />{{ startingExecution ? '正在准备…' : '开始任务' }}
                 </button>
                 <button v-else-if="mission.status === 'running'" class="mission-button warning" @click="pauseExecution">暂停</button>
-                <button v-else-if="mission.status === 'paused'" class="mission-button primary" @click="startExecution">
-                  <UiIcon name="play" :size="14" />继续执行
+                <button v-else-if="mission.status === 'paused'" class="mission-button primary" :disabled="startingExecution" @click="startExecution">
+                  <UiIcon name="play" :size="14" />{{ startingExecution ? '正在准备…' : '继续执行' }}
                 </button>
-                <button v-else class="mission-button primary" @click="startExecution">
-                  <UiIcon name="play" :size="14" />重新执行
+                <button v-else class="mission-button primary" :disabled="startingExecution" @click="startExecution">
+                  <UiIcon name="play" :size="14" />{{ startingExecution ? '正在准备…' : '重新执行' }}
                 </button>
 
                 <button
@@ -201,6 +201,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CameraPanel from '../../components/CameraPanel.vue'
 import UiIcon from '../../components/UiIcon.vue'
+import { API_BASE, apiFetch } from '../../config.js'
+import { useRobotStore } from '../../stores/robotStore.js'
 import { useRosSessionStore } from '../../stores/rosSessionStore.js'
 import { useInspectionStore } from '../../stores/inspectionStore.js'
 import { confirmDialog, showToast } from '../../stores/toastStore.js'
@@ -240,13 +242,29 @@ const {
   navStatus,
   localizationData,
   odomData,
-  sendGoalPose
+  sendGoalPose,
+  connectRobot,
+  switchRobot,
+  stopNavigation,
+  setOperationMode
 } = useRosSessionStore()
+const { robots, activeRobotId } = useRobotStore()
 const { pushRuntimeAlert } = useInspectionStore()
 
 const errorMessage = ref('')
+const startingExecution = ref(false)
 let timer = null
 let lastDispatchedKey = ''
+let ensuredMapKey = ''
+let dispatchArmed = false
+let startGeneration = 0
+let disposed = false
+
+function finiteCoordinate(value) {
+  if (value === '' || value === null || value === undefined) return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
 
 const mission = computed(() => missions.value.find((item) => item.id === routeMissionId.value))
 const isActive = computed(() => ['running', 'paused'].includes(mission.value?.status))
@@ -257,7 +275,11 @@ const remainingDistance = computed(() => {
   const pos = localizationData.value?.pose?.pose?.position || odomData.value?.pose?.pose?.position
   let poseDist = null
   if (wp && pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
-    poseDist = Math.hypot(pos.x - Number(wp.pose.x), pos.y - Number(wp.pose.y))
+    const wx = finiteCoordinate(wp.pose?.x)
+    const wy = finiteCoordinate(wp.pose?.y)
+    if (wx !== null && wy !== null) {
+      poseDist = Math.hypot(pos.x - wx, pos.y - wy)
+    }
   }
   const fbDist = navFeedback.value?.distance_remaining
   if (Number.isFinite(fbDist) && fbDist > 0.001) {
@@ -289,24 +311,171 @@ const phaseText = computed(() => {
 })
 
 function dispatchCurrentGoalIfNeeded() {
+  if (!dispatchArmed) return
   if (!isConnected.value) return
   if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
   const wp = currentWaypoint.value
   if (!wp) return
-  const key = `${mission.value.id}:${mission.value.run.currentCycle}:${mission.value.run.currentWaypointIndex}`
+  const key = `${mission.value.id}:${mission.value.run.currentCycle}:${mission.value.run.currentWaypointIndex}:${mission.value.run.retryCount || 0}`
   if (lastDispatchedKey === key) return
+  const x = finiteCoordinate(wp.pose?.x)
+  const y = finiteCoordinate(wp.pose?.y)
+  const yaw = finiteCoordinate(wp.pose?.yaw)
+  if (x === null || y === null || yaw === null) {
+    appendRunLog(mission.value, `巡检点“${wp.name}”坐标缺失或无效，无法下发导航目标。`, 'warning')
+    return
+  }
   lastDispatchedKey = key
-  sendGoalPose(wp.pose.x, wp.pose.y, wp.pose.yaw || 0)
-  appendRunLog(mission.value, `已下发导航目标“${wp.name}” (${wp.pose.x.toFixed(2)}, ${wp.pose.y.toFixed(2)})。`)
+  sendGoalPose(x, y, yaw)
+  appendRunLog(mission.value, `已下发导航目标“${wp.name}” (${x.toFixed(2)}, ${y.toFixed(2)})。`)
+}
+
+function waitForConnection(timeoutMs = 12000) {
+  if (isConnected.value) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(() => {
+      stopWatch()
+      resolve(false)
+    }, timeoutMs)
+    const stopWatch = watch(isConnected, (connected) => {
+      if (!connected) return
+      window.clearTimeout(timeout)
+      stopWatch()
+      resolve(true)
+    })
+  })
+}
+
+async function ensureMissionRobot(target) {
+  const robot = robots.value.find((item) => item.id === target.robotId)
+  if (!robot) {
+    throw new Error(`未找到任务绑定的机器狗（${target.robotName || target.robotId || '未配置'}），请先在机器人管理中配置。`)
+  }
+  if (robot.id === activeRobotId.value) {
+    connectRobot(robot)
+  } else {
+    switchRobot(robot)
+  }
+  if (await waitForConnection()) return robot
+  throw new Error(`机器狗“${robot.name}”连接超时，无法开始任务。`)
+}
+
+async function queryLocalizationRunning(scene) {
+  try {
+    const query = scene ? `?scene=${encodeURIComponent(scene)}` : ''
+    const res = await apiFetch(`${API_BASE}/localization_status${query}`)
+    if (!res.ok) return false
+    const data = await res.json()
+    return Boolean(data.isRunning)
+  } catch {
+    return false
+  }
+}
+
+async function ensureMissionMap(target, robot) {
+  const scene = robot.simulationScene || ''
+  const mapPath = target.map?.path || ''
+  if (!mapPath) throw new Error('任务未配置地图场景，无法开始执行。')
+  const key = `${scene}:${mapPath}`
+  if (ensuredMapKey === key && await queryLocalizationRunning(scene)) return
+  let res
+  try {
+    res = await apiFetch(`${API_BASE}/start_localization`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene, mapPath })
+    })
+  } catch (error) {
+    throw new Error(`加载任务地图失败：${error.message || '无法连接本地控制服务'}。`)
+  }
+  let data = null
+  try {
+    data = await res.json()
+  } catch {
+    data = null
+  }
+  if (!res.ok || !data || data.success === false) {
+    throw new Error(data?.error || `加载任务地图失败（HTTP ${res.status}），已取消任务启动。`)
+  }
+  ensuredMapKey = key
+  appendRunLog(target, `已加载导航地图“${target.map?.name || mapPath}”。`)
+}
+
+async function applySpeedLimits(target, robot) {
+  let res
+  try {
+    res = await apiFetch(`${API_BASE}/navigation/speed_limits`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scene: robot.simulationScene || '',
+        maxLinearSpeed: Number(target.navigation?.maxLinearSpeed),
+        maxAngularSpeed: Number(target.navigation?.maxAngularSpeed)
+      })
+    })
+  } catch (error) {
+    throw new Error(`速度上限配置失败：${error.message || '无法连接本地控制服务'}，已取消任务启动。`)
+  }
+  if (!res.ok) {
+    let detail = ''
+    try {
+      const data = await res.json()
+      detail = data?.error || ''
+    } catch {}
+    throw new Error(detail || `速度上限配置失败（HTTP ${res.status}），已取消任务启动。`)
+  }
+}
+
+function describeStopFailure(result) {
+  const details = Array.isArray(result?.errors) ? result.errors.filter(Boolean).join('；') : ''
+  return details || '请确认机器狗已停止'
+}
+
+async function requestStopNavigation() {
+  try {
+    const result = await stopNavigation()
+    return result || { success: false, errors: ['停车接口无返回'] }
+  } catch (error) {
+    return { success: false, errors: [error.message || '停车指令失败'] }
+  }
+}
+
+async function ensureExecutionReady(target, isStale) {
+  const robot = await ensureMissionRobot(target)
+  if (isStale()) return false
+  await ensureMissionMap(target, robot)
+  if (isStale()) return false
+  await applySpeedLimits(target, robot)
+  if (isStale()) return false
+  return true
+}
+
+function armAndDispatch(targetId) {
+  if (disposed) return
+  if (mission.value?.id !== targetId || mission.value?.status !== 'running') return
+  lastDispatchedKey = ''
+  dispatchArmed = true
+  setOperationMode('navigation')
+  dispatchCurrentGoalIfNeeded()
+}
+
+async function compensateStartedMission(id) {
+  dispatchArmed = false
+  const stopResult = await requestStopNavigation()
+  setOperationMode('idle', 'navigation')
+  try {
+    await pauseMission(id)
+  } catch {}
+  if (!stopResult.success) {
+    console.warn('启动补偿停车未完全成功:', stopResult.errors)
+    showToast(`任务已回退暂停，但停车未完全成功：${describeStopFailure(stopResult)}`, 'error')
+  }
 }
 
 async function startExecution() {
   errorMessage.value = ''
-  if (!isConnected.value) {
-    errorMessage.value = '当前机器狗未连接，无法执行真实 ROS 任务，请先连接机器狗。'
-    return
-  }
-  if (['completed', 'aborted'].includes(mission.value?.status)) {
+  if (!mission.value || startingExecution.value || resumePromise) return
+  if (['completed', 'aborted'].includes(mission.value.status)) {
     const ok = await confirmDialog({
       title: '重新执行任务',
       message: '重新执行将清空当前执行进度和日志，是否继续？',
@@ -314,21 +483,78 @@ async function startExecution() {
     })
     if (!ok) return
   }
+  if (!mission.value) return
+  startingExecution.value = true
+  const generation = ++startGeneration
+  const target = mission.value
+  const targetId = target.id
+  const isStale = () => disposed || generation !== startGeneration || mission.value?.id !== targetId
+  let started = false
   try {
-    lastDispatchedKey = ''
-    startMission(mission.value.id)
-    dispatchCurrentGoalIfNeeded()
+    if (!await ensureExecutionReady(target, isStale)) return
+    await startMission(targetId)
+    started = true
+    if (isStale()) {
+      await compensateStartedMission(targetId)
+      return
+    }
+    armAndDispatch(targetId)
   } catch (error) {
-    errorMessage.value = error.message
+    if (started && isStale()) {
+      await compensateStartedMission(targetId)
+    } else if (!isStale()) {
+      errorMessage.value = error.message
+    }
+  } finally {
+    if (generation === startGeneration) startingExecution.value = false
   }
 }
 
-function pauseExecution() {
+let resumePromise = null
+
+function resumeRunningMission(target) {
+  if (!target || target.status !== 'running' || disposed) return resumePromise
+  if (startingExecution.value || dispatchArmed) return resumePromise
+  if (resumePromise) return resumePromise
+  const generation = ++startGeneration
+  const targetId = target.id
+  const isStale = () => disposed || generation !== startGeneration || mission.value?.id !== targetId
+  resumePromise = (async () => {
+    try {
+      if (await ensureExecutionReady(target, isStale)) {
+        armAndDispatch(targetId)
+      }
+    } catch (error) {
+      if (!isStale()) errorMessage.value = error.message
+    } finally {
+      resumePromise = null
+    }
+  })()
+  return resumePromise
+}
+
+async function pauseExecution() {
   errorMessage.value = ''
+  const target = mission.value
+  if (!target) return
+  const targetId = target.id
+  dispatchArmed = false
+  lastDispatchedKey = ''
+  startGeneration += 1
+  const stopResult = await requestStopNavigation()
+  setOperationMode('idle', 'navigation')
+  if (disposed || mission.value?.id !== targetId) {
+    if (!stopResult.success) console.warn('暂停前停车未完全成功:', stopResult.errors)
+    return
+  }
   try {
-    pauseMission(mission.value.id)
+    await pauseMission(targetId)
   } catch (error) {
     errorMessage.value = error.message
+  }
+  if (!stopResult.success) {
+    appendRunLog(target, `暂停前停车未完全成功：${describeStopFailure(stopResult)}`, 'warning')
+    showToast(`停车指令未完全成功：${describeStopFailure(stopResult)}`, 'error')
   }
 }
 
@@ -338,18 +564,34 @@ function confirmArrived() {
 }
 
 async function abortExecution() {
+  if (!mission.value) return
+  const target = mission.value
   const ok = await confirmDialog({
     title: '终止巡检任务',
-    message: `确定终止任务“${mission.value.name}”吗？已完成进度将自动归档至巡检记录。`,
+    message: `确定终止任务“${target.name}”吗？已完成进度将自动归档至巡检记录。`,
     confirmText: '确认终止',
     danger: true
   })
-  if (!ok) return
+  if (!ok || mission.value?.id !== target.id) return
   errorMessage.value = ''
+  const targetId = target.id
+  dispatchArmed = false
+  lastDispatchedKey = ''
+  startGeneration += 1
+  const stopResult = await requestStopNavigation()
+  setOperationMode('idle', 'navigation')
+  if (disposed || mission.value?.id !== targetId) {
+    if (!stopResult.success) console.warn('终止前停车未完全成功:', stopResult.errors)
+    return
+  }
   try {
-    abortMission(mission.value.id)
+    await abortMission(targetId)
   } catch (error) {
     errorMessage.value = error.message
+  }
+  if (!stopResult.success) {
+    appendRunLog(target, `终止前停车未完全成功：${describeStopFailure(stopResult)}`, 'warning')
+    showToast(`停车指令未完全成功：${describeStopFailure(stopResult)}`, 'error')
   }
 }
 
@@ -406,9 +648,35 @@ function openRecords() {
 watch(routeMissionId, () => {
   errorMessage.value = ''
   lastDispatchedKey = ''
+  ensuredMapKey = ''
+  dispatchArmed = false
+  startGeneration += 1
+  if (mission.value?.status === 'running') {
+    resumeRunningMission(mission.value)
+  }
 })
 
-watch(() => [mission.value?.status, mission.value?.run?.phase, mission.value?.run?.currentWaypointIndex], () => {
+watch(isConnected, (connected) => {
+  if (connected) dispatchCurrentGoalIfNeeded()
+})
+
+watch(() => mission.value?.status, (status, previous) => {
+  if (status === 'running' && previous !== 'running' && !dispatchArmed && !startingExecution.value) {
+    resumeRunningMission(mission.value)
+    return
+  }
+  if (previous === 'running' && status && status !== 'running') {
+    dispatchArmed = false
+    setOperationMode('idle', 'navigation')
+    requestStopNavigation().then((result) => {
+      if (!result.success && !disposed) {
+        showToast(`停车指令未完全成功：${describeStopFailure(result)}`, 'error')
+      }
+    })
+  }
+})
+
+watch(() => [mission.value?.status, mission.value?.run?.phase, mission.value?.run?.currentWaypointIndex, mission.value?.run?.retryCount], () => {
   dispatchCurrentGoalIfNeeded()
 })
 
@@ -434,8 +702,12 @@ watch(navStatus, (st) => {
   }
 })
 
-onMounted(() => {
-  initMissionsFromServer()
+onMounted(async () => {
+  await initMissionsFromServer()
+  lastDispatchedKey = ''
+  if (mission.value?.status === 'running') {
+    resumeRunningMission(mission.value)
+  }
   timer = window.setInterval(() => {
     if (mission.value?.status === 'running') {
       tickMission(mission.value.id, {
@@ -447,21 +719,30 @@ onMounted(() => {
             scene: m.map?.name || '巡检任务',
             level: 'critical',
             title: `巡检点导航超时：${wp.name}`,
-            description: `任务“${m.name}”前往“${wp.name}”超过 ${m.navigation.navigationTimeoutSeconds} 秒未到达。`,
+            description: `任务“${m.name}”前往“${wp.name}”超过 ${m.navigation.navigationTimeoutSeconds} 秒未到达，将按任务异常策略处理。`,
             recommendation: '请检查路径障碍物、定位状态及 Nav2 规划器日志。',
             reading: `${m.navigation.navigationTimeoutSeconds}s`,
             threshold: '单点导航超时阈值'
           })
-          abortMission(m.id, `前往“${wp.name}”导航超时，任务已自动中止并生成告警。`)
-          showToast(`导航超时：已中止任务并生成告警`, 'error')
         }
-      })
+      }).catch(() => {})
     }
   }, 1000)
 })
 
 onUnmounted(() => {
+  disposed = true
+  startGeneration += 1
+  dispatchArmed = false
   if (timer) window.clearInterval(timer)
+  setOperationMode('idle', 'navigation')
+  if (mission.value?.status === 'running') {
+    const targetId = mission.value.id
+    requestStopNavigation().then((result) => {
+      if (!result.success) console.warn('离开执行页时停车未完全成功:', result.errors)
+    })
+    pauseMission(targetId).catch(() => {})
+  }
 })
 </script>
 

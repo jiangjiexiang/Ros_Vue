@@ -7,6 +7,7 @@ FAST-LIO 3D 全局定位节点（原生对接 Nav2 TF 链）：
 - 发布 /localization (Odometry)、/localization/path (Path) 与 /global_map (PointCloud2)
 """
 
+import bisect
 import copy
 import math
 import threading
@@ -101,6 +102,45 @@ def odometry_transform(message):
     transform[:3, :3] = quaternion_matrix(q.w, q.x, q.y, q.z)
     transform[:3, 3] = (p.x, p.y, p.z)
     return transform
+
+
+def stamp_seconds(stamp):
+    return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+
+def interpolate_transform(history, stamp, tolerance=0.15):
+    if not history:
+        return None
+    times = [entry[0] for entry in history]
+    right = bisect.bisect_right(times, stamp)
+    if right == 0:
+        return history[0][1].copy() if abs(stamp - times[0]) <= tolerance else None
+    if right == len(history):
+        return history[-1][1].copy() if abs(stamp - times[-1]) <= tolerance else None
+    left = right - 1
+    t0, first = history[left]
+    t1, second = history[right]
+    if t1 <= t0:
+        return first.copy()
+    alpha = (stamp - t0) / (t1 - t0)
+    result = np.eye(4)
+    result[:3, 3] = first[:3, 3] + alpha * (second[:3, 3] - first[:3, 3])
+    q0 = np.asarray(matrix_quaternion(first[:3, :3]), dtype=np.float64)
+    q1 = np.asarray(matrix_quaternion(second[:3, :3]), dtype=np.float64)
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+    if dot > 0.9995:
+        quaternion = q0 + alpha * (q1 - q0)
+    else:
+        theta = math.acos(max(-1.0, min(1.0, dot)))
+        quaternion = (
+            math.sin((1.0 - alpha) * theta) * q0 + math.sin(alpha * theta) * q1
+        ) / math.sin(theta)
+    quaternion /= np.linalg.norm(quaternion)
+    result[:3, :3] = quaternion_matrix(*quaternion)
+    return result
 
 
 def set_pose(pose, transform):
@@ -243,6 +283,7 @@ class FastlioLocalization(Node):
         self.initialized_pose = not self.auto_initial_pose
         self.allow_large_jump = True
         self.latest_fastlio = None
+        self.fastlio_history = []
         self.latest_base_odom = None
         self.latest_localized = None
         self.last_icp_time = 0.0
@@ -254,9 +295,8 @@ class FastlioLocalization(Node):
         self.path_poses = []
         self.last_path_xy = None
         self.body_sensor = np.eye(4)
-        # IsaacLab MultiMeshRayCaster outputs points relative to base_link XY origin (X=0);
-        # keep Z=0.20 to match FAST-LIO/PCD map floor elevation (z≈0.20m).
-        self.body_sensor[0, 3] = 0.0
+        # MultiMeshRayCaster 点位于 base_scan；X/Z 与桥接 TF 和 FAST-LIO 外参一致。
+        self.body_sensor[0, 3] = 0.15
         self.body_sensor[2, 3] = 0.20
 
         self.map_publisher = self.create_publisher(PointCloud2, self.topic("/global_map"), 10)
@@ -312,8 +352,13 @@ class FastlioLocalization(Node):
 
     def on_fastlio_odometry(self, message: Odometry):
         fastlio = odometry_transform(message)
+        fastlio_stamp = stamp_seconds(message.header.stamp)
         with self.scan_lock:
             self.latest_fastlio = fastlio
+            self.fastlio_history.append((fastlio_stamp, fastlio.copy()))
+            self.fastlio_history = [
+                entry for entry in self.fastlio_history if fastlio_stamp - entry[0] <= 10.0
+            ][-400:]
             if not self.initialized_pose and self.latest_base_odom is not None:
                 self._align_correction_to_target(self.latest_base_odom)
                 self.initialized_pose = True
@@ -329,7 +374,6 @@ class FastlioLocalization(Node):
             self.latest_localized = localized
 
         output = copy.deepcopy(message)
-        output.header.stamp = self.get_clock().now().to_msg()
         output.header.frame_id = "map"
         output.child_frame_id = "body"
         set_pose(output.pose.pose, localized)
@@ -391,23 +435,52 @@ class FastlioLocalization(Node):
         self.tf_publisher.publish(TFMessage(transforms=transforms))
 
     def on_scan(self, message: PointCloud2):
-        if self.map_tree is None or self.latest_fastlio is None:
+        if self.map_tree is None:
             return
         now = time.monotonic()
         if now - self.last_icp_time < 0.45:
             return
-        pts_list = [[p[0], p[1], p[2]] for p in point_cloud2.read_points(message, field_names=("x", "y", "z"), skip_nans=True)]
-        if len(pts_list) < 30:
+        with self.scan_lock:
+            if not self.fastlio_history:
+                return
+            history = [(stamp, transform.copy()) for stamp, transform in self.fastlio_history]
+        samples = [
+            [p[0], p[1], p[2], p[3]]
+            for p in point_cloud2.read_points(
+                message, field_names=("x", "y", "z", "time"), skip_nans=True
+            )
+        ]
+        if len(samples) < 30:
             return
-        points = np.asarray(pts_list, dtype=np.float64)
-        # Filter out body self-hits (<0.35m) and ceiling (>2.0m)
-        dists = np.linalg.norm(points[:, :2], axis=1)
-        points = points[(dists >= 0.35) & (dists <= 18.0) & (points[:, 2] >= -0.6) & (points[:, 2] <= 1.8)]
-        if len(points) < 30:
+        samples = np.asarray(samples, dtype=np.float64)
+        dists = np.linalg.norm(samples[:, :2], axis=1)
+        samples = samples[
+            (dists >= 0.35)
+            & (dists <= 18.0)
+            & (samples[:, 2] >= -0.6)
+            & (samples[:, 2] <= 1.8)
+        ]
+        if len(samples) < 30:
             return
+
+        scan_stamp = stamp_seconds(message.header.stamp)
+        reference = interpolate_transform(history, scan_stamp)
+        if reference is None:
+            return
+        reference_sensor = reference @ self.body_sensor
+        reference_sensor_inv = np.linalg.inv(reference_sensor)
+        points = np.empty((len(samples), 3), dtype=np.float64)
+        for index, sample in enumerate(samples):
+            point_pose = interpolate_transform(history, scan_stamp + float(sample[3]))
+            if point_pose is None:
+                return
+            point_sensor = point_pose @ self.body_sensor
+            deskew = reference_sensor_inv @ point_sensor
+            points[index] = deskew[:3, :3] @ sample[:3] + deskew[:3, 3]
+
         with self.scan_lock:
             self.scan_points = voxel_downsample(points, 0.20)
-            self.scan_fastlio = self.latest_fastlio.copy()
+            self.scan_fastlio = reference
             self.scan_condition.notify()
 
     def localization_worker(self):

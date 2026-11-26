@@ -32,6 +32,7 @@
         <MappingControl
           v-show="activeOperation === 'mapping'"
           :connected="isConnected"
+          :simulationScene="activeRobot?.simulationScene || ''"
           v-model:isMapping="mappingActive"
           @mappingStarted="onMappingStarted"
         />
@@ -39,6 +40,7 @@
           v-show="activeOperation === 'navigation'"
           :connected="isConnected"
           :mapsRevision="mapsRevision"
+          :simulationScene="activeRobot?.simulationScene || ''"
           v-model:selectedMap="selectedScenePath"
           v-model:isNavigating="navigationActive"
           v-model:isSettingPose="isSettingPose"

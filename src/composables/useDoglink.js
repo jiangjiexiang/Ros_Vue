@@ -140,8 +140,12 @@ function stopPingLoop() {
 }
 
 function sendJson(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false
+  try {
     ws.send(JSON.stringify(obj))
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -282,11 +286,11 @@ function clientAdvertise(topic, schemaName, encoding = 'json') {
 function publishMessage(clientChannelId, messageObj) {
   const ch = clientChannels.get(clientChannelId)
   if (!ch) return
-  sendJson({ op: 'pub', topic: ch.topic, type: ch.schemaName, msg: messageObj })
+  return sendJson({ op: 'pub', topic: ch.topic, type: ch.schemaName, msg: messageObj })
 }
 
 function sendTwist(clientChannelId, linearX, angularZ) {
-  publishMessage(clientChannelId, {
+  return publishMessage(clientChannelId, {
     linear: { x: linearX, y: 0, z: 0 },
     angular: { x: 0, y: 0, z: angularZ }
   })

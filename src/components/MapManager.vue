@@ -68,7 +68,7 @@
 
 <script setup>
 import { nextTick, onMounted, reactive, ref } from 'vue'
-import { API_BASE } from '../config.js'
+import { API_BASE, apiFetch } from '../config.js'
 import { confirmDialog, showToast } from '../stores/toastStore.js'
 import UiIcon from './UiIcon.vue'
 import MapEditor from './MapEditor.vue'
@@ -85,7 +85,7 @@ const editingMap = ref('')
 const previews = reactive({})
 
 async function request(url, options = {}) {
-  const res = await fetch(`${API_BASE}${url}`, options)
+  const res = await apiFetch(`${API_BASE}${url}`, options)
   const data = await res.json()
   if (!res.ok || data.success === false) throw new Error(data.error || '操作失败')
   return data

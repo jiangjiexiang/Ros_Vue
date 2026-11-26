@@ -1,7 +1,8 @@
 {
-  "name": "robot-console",
+  "name": "quadpatrol",
   "private": true,
   "version": "1.0.0",
+  "description": "QuadPatrol 四足智巡平台：基于 ROS 2 Humble、FAST-LIO、Nav2 与 Isaac Sim 的工业四足机器狗巡检管控平台",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
