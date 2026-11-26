@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${ISAACLAB_PYTHON:-/home/zju/miniconda3/envs/env_isaaclab/bin/python}"
+PYTHON_BIN="${ISAACLAB_PYTHON:-${HOME}/miniconda3/envs/env_isaaclab/bin/python}"
 SCENE="${1:-indoor}"
 export DISPLAY="${DISPLAY:-:0}"
 PYTHON_HOME="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"

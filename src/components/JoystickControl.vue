@@ -56,6 +56,7 @@ const canvasRef = ref(null)
 const knobX = ref(0)
 const knobY = ref(0)
 let isDragging = false
+let wasActive = false
 let animationId = null
 let sendTimer = null
 
@@ -206,24 +207,35 @@ function animateReturn() {
   step()
 }
 
-function stopMotion() {
+function stopMotion(forceEmit = true) {
   if (animationId) cancelAnimationFrame(animationId)
+  const hadMotion = isDragging || wasActive || Math.abs(knobX.value) > 0.001 || Math.abs(knobY.value) > 0.001
   isDragging = false
+  wasActive = false
   removePointerListeners()
   knobX.value = 0
   knobY.value = 0
   draw()
-  emit('stop')
-  emit('velocity-change', { linearX: 0, angularZ: 0 })
+  if (forceEmit || hadMotion) {
+    emit('stop')
+    emit('velocity-change', { linearX: 0, angularZ: 0 })
+  }
 }
 
 function startSendLoop() {
   if (sendTimer) return
   sendTimer = setInterval(() => {
-    emit('velocity-change', {
-      linearX: knobY.value * -props.maxLinearSpeed,
-      angularZ: knobX.value * -props.maxAngularSpeed
-    })
+    const active = isDragging || Math.abs(knobX.value) > 0.001 || Math.abs(knobY.value) > 0.001
+    if (active) {
+      wasActive = true
+      emit('velocity-change', {
+        linearX: knobY.value * -props.maxLinearSpeed,
+        angularZ: knobX.value * -props.maxAngularSpeed
+      })
+    } else if (wasActive) {
+      wasActive = false
+      emit('velocity-change', { linearX: 0, angularZ: 0 })
+    }
   }, commandInterval.value)
 }
 
@@ -243,7 +255,7 @@ watch(() => props.connected, (connected) => {
     draw()
   } else {
     stopSendLoop()
-    stopMotion()
+    stopMotion(false)
   }
 })
 
@@ -259,12 +271,12 @@ onActivated(() => {
 
 onDeactivated(() => {
   stopSendLoop()
-  stopMotion()
+  stopMotion(false)
 })
 
 onUnmounted(() => {
   stopSendLoop()
-  stopMotion()
+  stopMotion(false)
   removePointerListeners()
   if (animationId) cancelAnimationFrame(animationId)
 })

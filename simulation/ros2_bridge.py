@@ -50,12 +50,16 @@ class IsaacPlatformBridge(Node):
             "battery": namespaced(configured_topics.get("battery", "/battery")),
             "tf": namespaced(configured_topics.get("tf", "/tf")),
             "camera_primary": namespaced(configured_topics.get("camera_primary", "/camera1/preview/compressed")),
+            "amcl_pose": namespaced("/amcl_pose"),
+            "localization": namespaced(configured_topics.get("localization", "/localization")),
         }
         self.connected = False
         self.last_error_log = 0.0
         self.last_camera_error_log = 0.0
         self.last_pointcloud_error_log = 0.0
         self.battery_ticks = 0
+        self.external_map_tf_active = False
+        self.last_map_tf_check = 0.0
         self.prev_world_vel = None
         self.prev_imu_time = None
         self.prev_sim_steps = None
@@ -214,8 +218,20 @@ class IsaacPlatformBridge(Node):
             self.battery_publisher.publish(UInt16(data=120))
 
     def publish_tf(self, stamp, position, quaternion):
-        transforms = [
-            self.transform(stamp, "map", "odom", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)),
+        now = time.monotonic()
+        if now - self.last_map_tf_check >= 0.5:
+            self.last_map_tf_check = now
+            self.external_map_tf_active = (
+                self.count_publishers(self.topics["localization"]) > 0
+                or self.count_publishers(self.topics["amcl_pose"]) > 0
+            )
+
+        transforms = []
+        if not self.external_map_tf_active:
+            transforms.append(
+                self.transform(stamp, "map", "odom", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+            )
+        transforms.extend([
             self.transform(
                 stamp,
                 "odom",
@@ -224,7 +240,7 @@ class IsaacPlatformBridge(Node):
                 (quaternion["w"], quaternion["x"], quaternion["y"], quaternion["z"]),
             ),
             self.transform(stamp, "base_link", "base_scan", (0.15, 0.0, 0.20), (1.0, 0.0, 0.0, 0.0)),
-        ]
+        ])
         self.tf_publisher.publish(TFMessage(transforms=transforms))
 
     @staticmethod
@@ -290,9 +306,9 @@ class IsaacPlatformBridge(Node):
 
         def world_to_body(x, y, z):
             return (
-                r00 * x + r10 * y + r20 * z,
-                r01 * x + r11 * y + r21 * z,
-                r02 * x + r12 * y + r22 * z,
+                r00 * x + r01 * y + r02 * z,
+                r10 * x + r11 * y + r12 * z,
+                r20 * x + r21 * y + r22 * z,
             )
 
         angular = velocity["angular"]

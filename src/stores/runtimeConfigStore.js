@@ -12,6 +12,7 @@ export const MAPPING_DEFAULTS = { auto_start: false }
 
 export const TOPIC_DEFAULTS = {
   cmd_vel: '/cmd_vel',
+  manual_cmd_vel: '/manual_cmd_vel',
   battery: '/battery',
   map: '/map',
   scan: '/scan',
@@ -21,6 +22,7 @@ export const TOPIC_DEFAULTS = {
   goal_pose: '/goal_pose',
   initial_pose: '/initialpose',
   navigate_feedback: '/navigate_to_pose/_action/feedback',
+  navigate_status: '/navigate_to_pose/_action/status',
   imu: '/imu',
   camera_primary: '/camera1/preview/compressed',
   pointcloud: '/points',

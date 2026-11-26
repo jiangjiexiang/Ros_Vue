@@ -135,7 +135,6 @@
           :activeRobotId="activeRobotId"
           :connectionState="connectionState"
           :hasTopics="hasRobotTopics"
-        :hasRobotTopics="hasRobotTopics"
           :errorMessage="errorMessage"
           @connect="connectRobot"
         />
@@ -200,6 +199,7 @@
           :globalMapData="globalMapData"
           :layers="mapLayers"
           :isMapping="mappingActive"
+          :isLocalizing="localizationActive"
           :isNavigating="navigationActive"
           v-model:isSettingPose="isSettingPose"
           :multiPointMode="multiPointMode"
@@ -287,7 +287,6 @@
           :activeRobotId="activeRobotId"
           :connectionState="connectionState"
           :hasTopics="hasRobotTopics"
-        :hasRobotTopics="hasRobotTopics"
           :errorMessage="errorMessage"
           @connect="connectRobot"
         />

@@ -23,7 +23,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rosidl_runtime_py.utilities import get_message
 from sensor_msgs.msg import CompressedImage, Imu, LaserScan, PointCloud2
 from std_msgs.msg import Int32, UInt16
@@ -37,6 +37,7 @@ BIN_OCCUPANCY_GRID = 3
 
 KNOWN_TYPES = {
     "/cmd_vel": "geometry_msgs/msg/Twist",
+    "/manual_cmd_vel": "geometry_msgs/msg/Twist",
     "/goal_pose": "geometry_msgs/msg/PoseStamped",
     "/initialpose": "geometry_msgs/msg/PoseWithCovarianceStamped",
     "/odom": "nav_msgs/msg/Odometry",
@@ -50,10 +51,12 @@ KNOWN_TYPES = {
     "/path": "nav_msgs/msg/Path",
     "/global_map": "sensor_msgs/msg/PointCloud2",
     "/localization": "nav_msgs/msg/Odometry",
+    "/amcl_pose": "geometry_msgs/msg/PoseWithCovarianceStamped",
     "/tf": "tf2_msgs/msg/TFMessage",
     "/battery": "std_msgs/msg/UInt16",
     "/camera1/preview/compressed": "sensor_msgs/msg/CompressedImage",
     "/navigate_to_pose/_action/feedback": "nav2_msgs/action/NavigateToPose_FeedbackMessage",
+    "/navigate_to_pose/_action/status": "action_msgs/msg/GoalStatusArray",
 }
 
 SENSOR_QOS_SCHEMAS = {
@@ -262,12 +265,27 @@ def serialize_ros_message(topic: str, schema: str, msg):
             })
         body = {"poses": poses}
     elif schema == "nav2_msgs/action/NavigateToPose_FeedbackMessage":
+        fb = getattr(msg, "feedback", msg)
         body = {
-            "distance_remaining": float(msg.distance_remaining),
+            "distance_remaining": float(fb.distance_remaining),
             "estimated_time_remaining": {
-                "sec": int(msg.estimated_time_remaining.sec),
-                "nanosec": int(msg.estimated_time_remaining.nanosec),
+                "sec": int(fb.estimated_time_remaining.sec),
+                "nanosec": int(fb.estimated_time_remaining.nanosec),
             },
+        }
+    elif schema == "action_msgs/msg/GoalStatusArray":
+        status_list = []
+        for item in getattr(msg, "status_list", []):
+            raw_uuid = getattr(getattr(item, "goal_info", None), "goal_id", None)
+            uuid_bytes = bytes(getattr(raw_uuid, "uuid", [])) if raw_uuid is not None else b""
+            status_list.append({
+                "goal_id": uuid_bytes.hex(),
+                "status": int(item.status),
+            })
+        latest = status_list[-1] if status_list else None
+        body = {
+            "status_list": status_list,
+            "latest": latest,
         }
     else:
         return False, None
@@ -357,6 +375,7 @@ class DogLinkGatewayNode(Node):
         self.ros_pubs = {}
         self.topic_subscribers = {}
         self.cached_topics = []
+        self.cached_latched = {}
         self.subscription_created = {}
         self.state_lock = threading.Lock()
         self.create_timer(2.0, self.refresh_topics)
@@ -412,11 +431,17 @@ class DogLinkGatewayNode(Node):
             client.enqueue_frame(frame)
 
     def subscribe_topic(self, client: WebSocketClient, topic: str):
+        cached = None
         with self.state_lock:
             subs = self.topic_subscribers.setdefault(topic, set())
             subs.add(client)
             client.subscriptions.add(topic)
             if topic in self.ros_subs:
+                cached = self.cached_latched.get(topic)
+                if cached is not None:
+                    is_binary, encoded = cached
+                    frame = encode_ws_frame(0x2 if is_binary else 0x1, encoded)
+                    self.loop.call_soon_threadsafe(client.enqueue_frame, frame)
                 return
 
         schema = ""
@@ -436,12 +461,25 @@ class DogLinkGatewayNode(Node):
             self.get_logger().warning(f"加载消息类型 {schema} 失败: {err}")
             return
 
-        qos = qos_profile_sensor_data if schema in SENSOR_QOS_SCHEMAS else 10
+        is_latched_map = schema in ("nav_msgs/msg/OccupancyGrid", "action_msgs/msg/GoalStatusArray")
+        if is_latched_map:
+            qos = QoSProfile(
+                depth=1,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
+        elif schema in SENSOR_QOS_SCHEMAS:
+            qos = qos_profile_sensor_data
+        else:
+            qos = 10
 
         def on_message(msg):
             try:
                 is_binary, encoded = serialize_ros_message(topic, schema, msg)
                 if encoded is not None:
+                    if is_latched_map:
+                        with self.state_lock:
+                            self.cached_latched[topic] = (is_binary, encoded)
                     self.loop.call_soon_threadsafe(self._dispatch_topic, topic, is_binary, encoded)
             except Exception as err:
                 self.get_logger().debug(f"序列化 {topic} 失败: {err}")
@@ -463,6 +501,7 @@ class DogLinkGatewayNode(Node):
                     self.topic_subscribers.pop(topic, None)
                     sub_to_destroy = self.ros_subs.pop(topic, None)
                     self.subscription_created.pop(topic, None)
+                    self.cached_latched.pop(topic, None)
         if sub_to_destroy is not None:
             self.destroy_subscription(sub_to_destroy)
 
@@ -500,7 +539,6 @@ class DogLinkGatewayNode(Node):
             pub.publish(m)
         elif norm == "geometry_msgs/msg/PoseStamped":
             m = PoseStamped()
-            m.header.stamp = self.get_clock().now().to_msg()
             m.header.frame_id = msg_dict.get("header", {}).get("frame_id", "map")
             pose = msg_dict.get("pose", {})
             pos = pose.get("position", {})
@@ -515,7 +553,6 @@ class DogLinkGatewayNode(Node):
             pub.publish(m)
         elif norm == "geometry_msgs/msg/PoseWithCovarianceStamped":
             m = PoseWithCovarianceStamped()
-            m.header.stamp = self.get_clock().now().to_msg()
             m.header.frame_id = msg_dict.get("header", {}).get("frame_id", "map")
             pose_block = msg_dict.get("pose", {})
             pose = pose_block.get("pose", {})
@@ -630,7 +667,7 @@ async def handle_ws_client(reader: asyncio.StreamReader, writer: asyncio.StreamW
                     node.unsubscribe_topic(client, msg["topic"])
                 elif op == "pub" and isinstance(msg.get("topic"), str):
                     node.publish_from_client(msg["topic"], msg.get("type", ""), msg.get("msg", {}))
-    except (asyncio.IncompleteReadError, ConnectionError, TimeoutError):
+    except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError, TimeoutError):
         pass
     finally:
         if client is not None:

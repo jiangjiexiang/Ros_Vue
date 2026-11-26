@@ -2,5 +2,9 @@ node_modules/
 dist/
 maps/
 data/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+simulation/textures/
 *.log
 .DS_Store

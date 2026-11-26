@@ -93,9 +93,9 @@ defineProps({
 const emit = defineEmits(['active-scene-change'])
 
 const scenes = [
-  { id: 'indoor', name: '室内巡检', icon: 'map', description: '办公室隔墙、门洞和桌椅，测试基础巡检与绕障。', tags: ['12 × 10 m', '门洞', '室内障碍'] },
-  { id: 'warehouse', name: '仓库障碍', icon: 'layers', description: '货架、堆垛和窄通道，测试复杂环境通过能力。', tags: ['16 × 13 m', '窄通道', '货架'] },
-  { id: 'outdoor', name: '户外坡道', icon: 'route', description: '连续坡道、台阶和岩石，测试地形适应能力。', tags: ['17 × 14 m', '12° 坡道', '台阶'] }
+  { id: 'indoor', name: '室内配电与机房巡检', icon: 'map', description: '高压配电柜、温控阵列、服务器机柜及消防管网阀门站，验证室内多点自动巡检。', tags: ['12 × 10 m', '高压配电柜', '消防管网', '服务器机房'] },
+  { id: 'warehouse', name: '工业仓储物流巡检', icon: 'layers', description: '蓝橙钢结构货架、条码货箱、叉车、危化品桶与配电消防设施，测试复杂通道巡检。', tags: ['16 × 13 m', '钢结构货架', '叉车障碍', '危化品区'] },
+  { id: 'outdoor', name: '户外变电站巡检', icon: 'route', description: '沥青变电园区、高压主变与瓷套管、户外开关柜及护栏检修坡道与台阶，验证户外巡检。', tags: ['17 × 14 m', '高压变压器', '检修坡道', '户外开关柜'] }
 ]
 
 const activeScene = ref('')

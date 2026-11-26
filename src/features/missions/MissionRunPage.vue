@@ -237,6 +237,9 @@ const {
   robotTopics,
   linearSpeed,
   navFeedback,
+  navStatus,
+  localizationData,
+  odomData,
   sendGoalPose
 } = useRosSessionStore()
 const { pushRuntimeAlert } = useInspectionStore()
@@ -250,8 +253,17 @@ const isActive = computed(() => ['running', 'paused'].includes(mission.value?.st
 const progress = computed(() => mission.value ? getMissionProgress(mission.value) : { completed: 0, total: 0, percent: 0 })
 const currentWaypoint = computed(() => mission.value?.waypoints[mission.value.run.currentWaypointIndex] || null)
 const remainingDistance = computed(() => {
-  const dist = navFeedback.value?.distance_remaining
-  return Number.isFinite(dist) ? dist : null
+  const wp = currentWaypoint.value
+  const pos = localizationData.value?.pose?.pose?.position || odomData.value?.pose?.pose?.position
+  let poseDist = null
+  if (wp && pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+    poseDist = Math.hypot(pos.x - Number(wp.pose.x), pos.y - Number(wp.pose.y))
+  }
+  const fbDist = navFeedback.value?.distance_remaining
+  if (Number.isFinite(fbDist) && fbDist > 0.001) {
+    return poseDist !== null ? Math.min(fbDist, poseDist) : fbDist
+  }
+  return poseDist
 })
 const displayCycle = computed(() => {
   if (!mission.value) return 0
@@ -404,9 +416,21 @@ watch(remainingDistance, (dist) => {
   if (dist === null) return
   if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
   if (mission.value.run.elapsedSeconds < 2) return
-  const tolerance = Math.max(0.1, Number(mission.value.navigation?.goalTolerance || 0.25))
-  if (dist <= tolerance) {
+  const baseTol = Number(mission.value.navigation?.goalTolerance || 0.3)
+  const spd = Math.abs(odomData.value?.twist?.twist?.linear?.x || 0)
+  const settled = (navStatus.value?.status !== 1 && navStatus.value?.status !== 2) && spd < 0.05
+  if (dist <= Math.min(0.26, baseTol) || (settled && dist <= Math.max(0.38, baseTol))) {
     completeCurrentWaypointNavigation(mission.value.id, `（距离目标 ${dist.toFixed(2)} m，已到达）`)
+  }
+})
+
+watch(navStatus, (st) => {
+  if (!st || st.status !== 4) return
+  if (!mission.value || mission.value.status !== 'running' || mission.value.run.phase !== 'navigating') return
+  if (mission.value.run.elapsedSeconds < 2) return
+  const dist = remainingDistance.value
+  if (dist !== null && dist <= 0.65) {
+    completeCurrentWaypointNavigation(mission.value.id, `（Nav2 到达目标，距离 ${dist.toFixed(2)} m）`)
   }
 })
 

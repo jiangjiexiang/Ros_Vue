@@ -298,6 +298,7 @@
     "topics": {
         "camera_primary": "/camera1/preview/compressed",
         "cmd_vel": "/cmd_vel",
+        "manual_cmd_vel": "/manual_cmd_vel",
         "battery": "/battery",
         "map": "/map",
         "scan": "/scan",
@@ -307,6 +308,7 @@
         "goal_pose": "/goal_pose",
         "initial_pose": "/initialpose",
         "navigate_feedback": "/navigate_to_pose/_action/feedback",
+        "navigate_status": "/navigate_to_pose/_action/status",
         "imu": "/imu",
         "pointcloud": "/points",
         "registered_cloud": "/cloud_registered",

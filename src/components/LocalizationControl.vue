@@ -3,7 +3,7 @@
     <label class="map-select-label">
       <span>用于定位的保存地图</span>
       <select v-model="selectedMap" :disabled="isLocalizing || loadingMaps">
-        <option value="">请选择 PCD 地图</option>
+        <option value="">请选择已保存地图</option>
         <option v-for="map in maps" :key="map.name" :value="map.path">{{ map.name }}</option>
       </select>
     </label>
@@ -60,11 +60,13 @@ const pose = computed(() => {
   const orientation = props.message?.pose?.pose?.orientation
   if (!position || !orientation) return { x: '--', y: '--', z: '--', yaw: '--' }
   const format = (value) => Number.isFinite(value) ? value.toFixed(3) : '--'
+  const { w = 1, x = 0, y = 0, z = 0 } = orientation
+  const yawRad = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
   return {
     x: format(position.x),
     y: format(position.y),
     z: format(position.z),
-    yaw: (Math.atan2(2 * orientation.w * orientation.z, 1 - 2 * orientation.z * orientation.z) * 180 / Math.PI).toFixed(1)
+    yaw: Number.isFinite(yawRad) ? (yawRad * 180 / Math.PI).toFixed(1) : '--'
   }
 })
 const namespacedTopic = computed(() => props.simulationScene ? `/${props.simulationScene}/localization` : '/localization')

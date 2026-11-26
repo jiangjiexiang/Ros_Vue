@@ -1,6 +1,6 @@
 <template>
   <section class="control-section">
-    <p class="control-description">选择保存地图并启动定位后，直接双击地图目标即可前往，无需预设巡检点。</p>
+    <p class="control-description">选择保存地图并启动定位后，直接单击地图目标即可前往，无需预设巡检点。</p>
 
     <div class="nav-section">
       <label class="nav-label" for="navigation-map">导航地图</label>
@@ -108,8 +108,8 @@ let statusTimer = null
 
 const hintText = computed(() => {
   if (isSettingPose.value) return '在地图中按住并拖动，设置机器人位置与朝向。'
-  if (multiPointMode.value && !isNavigating.value) return '双击地图添加巡检点，确认后启动导航依次执行。'
-  return multiPointMode.value ? '双击地图连续添加航点，机器人将依次执行。' : '双击地图设置一个导航目标点。'
+  if (multiPointMode.value && !isNavigating.value) return '单击地图添加巡检点，确认后启动导航依次执行。'
+  return multiPointMode.value ? '单击地图连续添加航点，机器人将依次执行。' : '单击地图设置一个导航目标点。'
 })
 
 async function loadMaps() {

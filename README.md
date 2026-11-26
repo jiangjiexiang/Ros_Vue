@@ -1,6 +1,23 @@
 # 四足巡检机器狗平台
 
-用于四足巡检机器狗的 Vue 平台，包含实时地图、运动控制、巡检任务、地图场景、巡检记录、告警和多机器狗管理。
+面向工业巡检场景的四足机器狗智能管控平台（Vue 3 + Three.js + Express + ROS 2 Humble + FAST-LIO + Nav2 + Isaac Sim），集成 3D/2D 实时地图、定点与多点自主导航、巡检任务编排与执行、巡检报告与告警溯源、多机器狗接入及三大高写实 GPU 工业仿真环境。
+
+## 🎬 平台功能实拍演示
+
+[![平台功能实拍与仿真同步对比](docs/media/demo_mission_sync.jpg)](docs/media/platform_intro.mp4)
+
+<video src="docs/media/platform_intro.mp4" controls width="100%" poster="docs/media/demo_mission_sync.jpg"></video>
+
+- **完整平台介绍视频（含中文解说、字幕与平台/仿真双路同秒同步对比）**：[`docs/media/platform_intro.mp4`](docs/media/platform_intro.mp4)（1080p · 30 fps · 2 分 51 秒）
+  - 完整演示：巡检总览 → 写实配电室 3D 单点定点导航 → 3 航点多点连续自主巡航（`3 → 2 → 1 → 0`）→ 2D 栅格实时导航 → 工业巡检任务全流程自动执行（到点停留采集 → 自动打钩推进）→ 巡检报告超温溯源与三大工业场景展示。
+- **独立 Isaac Sim 写实仿真全程实录（纯仿真第三人称视角，无网页叠层）**：[`docs/media/isaac_sim_recording.mp4`](docs/media/isaac_sim_recording.mp4)（720p · 30 fps · 1 分 43 秒）
+
+### 三大高写实工业巡检仿真场景
+
+| 室内配电与机房巡检 (`indoor`) | 工业仓储物流巡检 (`warehouse`) | 户外变电站巡检 (`outdoor`) |
+| :---: | :---: | :---: |
+| ![室内配电与机房巡检](docs/media/scene_indoor.jpg) | ![工业仓储物流巡检](docs/media/scene_warehouse.jpg) | ![户外变电站巡检](docs/media/scene_outdoor.jpg) |
+| 10kV 高压配电柜表盘、温控柜、42U 服务器机柜、红蓝黄消防管网阀门与压力表 | 蓝橙重型工业货架、栈板纸箱、黄色叉车、危化品桶与消防栓站 | 沥青巡检道路、户外高压主变台区与陶瓷套管、防滑检修坡道与护栏 |
 
 ## 启动
 
@@ -97,17 +114,26 @@ FAST-LIO 接入默认点云为 `/points`、IMU 为 `/imu`；常见输出为 `/Od
 ## 开发
 
 ```text
-src/App.vue                 页面布局
-src/assets/main.css         全局样式
-src/components/             页面组件
-src/composables/useFoxglove.js  ROS 数据通信
-src/features/               巡检业务页面
-src/layout/                 应用外壳与导航
-src/router.js               页面路由
-server/index.js             后端与 ROS 任务管理
-config/ros_config.json      ROS 配置
-scripts/start_console.sh    启动脚本
-scripts/test_sub.py         ROS 订阅测试脚本
+src/App.vue                       页面布局
+src/assets/main.css               全局样式
+src/components/                   页面组件（含 3D/2D 地图与控制面板）
+src/composables/                  ROS 2 通信（DogLink / Foxglove / rosbridge）
+src/features/                     巡检业务页面（任务、记录、告警等）
+src/layout/                       应用外壳与导航
+src/router.js                     页面路由
+server/index.js                   后端服务与 ROS 任务管理
+gateway/doglink_gateway.py        DogLink 轻量级 ROS 2 WebSocket 网关
+config/ros_config.json            ROS 话题与仿真任务配置
+config/nav2_params.yaml           Nav2 3D VoxelLayer 导航参数
+simulation/run_scene.py           Isaac Sim 仿真主入口
+simulation/scene_assets.py        高写实工业巡检场景 PBR 资产生成器
+simulation/ros2_bridge.py         仿真与 ROS 2 双向传感器/控制桥接
+simulation/nav2_launch.py         FAST-LIO 3D 定位 + Nav2 统一启动脚本
+simulation/fastlio_localization.py FAST-LIO 3D 全局定位与 ICP 配准节点
+simulation/nav2_bridge_helper.py  人工接管自动取消导航辅助节点
+maps/indoor_substation.*          室内配电房 3D 点云与 2D 占据栅格地图
+docs/media/                       平台介绍视频、独立仿真录像与场景展示图
+scripts/start_console.sh          控制台一键启动脚本
 ```
 
 检查代码：
@@ -130,7 +156,13 @@ node --check server/index.js
 
 保存地图默认使用 `nav2_map_server/map_saver_cli`，也可以修改 `save_map`。
 
-仿真场景支持独立的“纯定位 + 点击导航”：在工作台“定位”或“导航”页选择平台保存的 ASCII PCD 地图并启动，FAST-LIO 提供局部里程计，项目内 ICP 节点将位姿校正到保存地图，输出 `/localization`、`/localization/path` 和 `/global_map`。启动后直接双击地图目标即可进行 A* 规划与关节运动控制，无需预设巡检任务；实时点云会叠加到障碍栅格并重规划，人工 WASD 指令会打断自动导航。建图与纯定位使用独立任务状态，停止场景会同时停止相关任务。
+仿真场景与实机均支持 **FAST-LIO 3D 定位（3D 点云 + IMU + ICP 全局配准）+ 开源 Nav2（3D `VoxelLayer` 体素避障 + Navfn A* 全局规划 + Regulated Pure Pursuit 控制与恢复）** 巡检导航。使用前需安装 ROS 2 Humble Nav2 功能包：
+
+```bash
+sudo apt update && sudo apt install -y ros-humble-navigation2 ros-humble-nav2-bringup
+```
+
+在工作台“定位”或“导航”页选择已保存的地图（`.yaml` + `.pgm` + `.pcd`）并启动，Nav2 参数位于 `config/nav2_params.yaml`，启动脚本位于 `simulation/nav2_launch.py`；定位节点 `simulation/fastlio_localization.py` 负责将 FAST-LIO 3D 里程计与保存 `.pcd` 地图对齐并输出 `map → odom` TF 与 `/localization`；伴随节点 `simulation/nav2_bridge_helper.py` 负责在人工 WASD/摇杆接管时取消 Nav2 当前目标。启动后单击地图目标或添加多点航点即可巡检。建图与定位导航使用独立任务状态，停止场景会同时停止相关任务。
 
 测试不同机器人或仿真器时，可通过 `ROS_CONFIG_FILE` 指向项目外的配置文件，不需要修改仓库默认配置：
 
@@ -142,11 +174,11 @@ ROS_CONFIG_FILE=/path/to/test_config.json bash scripts/start_console.sh
 
 ## GPU 仿真测试
 
-项目提供三个 Isaac Sim 场景，均使用 Unitree Go2 关节模型、真实碰撞和 CUDA 物理计算：
+项目提供三个高写实 Isaac Sim 工业巡检场景（纯本地离线 PBR 纹理与多部件工业设备建模，无需等待云端下载），均使用 Unitree Go2 关节模型、真实碰撞和 CUDA 物理计算：
 
-- `indoor`：室内巡检，包含办公室隔墙、门洞、桌椅和巡检柜。
-- `warehouse`：仓库障碍，包含货架、堆垛、安全柱和窄通道。
-- `outdoor`：户外坡道，包含 12° 连续坡道、平台、台阶和岩石。
+- `indoor`：室内配电与机房巡检（12 × 10 m），包含环氧地坪与安全通道、10kV 高压主配电柜表盘、智能温控监测柜、42U 服务器机柜阵列、SCADA 双屏监控台、红蓝黄消防管网与阀门压力表站及消防栓箱。
+- `warehouse`：工业仓储物流巡检（16 × 13 m），包含蓝橙重型工业钢货架、木质栈板与条码纸箱、黄色工业叉车、危化品桶、仓库配电柜与消防栓站。
+- `outdoor`：户外变电站巡检（17 × 14 m），包含沥青道路标线、户外高压主变台区（散热片 + 陶瓷高压套管）、户外开关柜、带安全护栏的混凝土检修坡道与工业台阶及警示防撞墩。
 
 在“仿真测试”中可以分别启动三条狗，三个场景可同时运行。平台默认使用无界面物理实例，并降低单机器人场景的 PhysX 预分配，以便在 16 GiB 显存上同时运行；相机、3D 点云和 IMU 保持启用。FAST-LIO 默认仅在手动开始建图后启动，也可在“系统配置 → 建图控制”中开启场景启动时自动建图。也可以从终端启动带图形窗口的单场景：
 

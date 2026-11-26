@@ -189,7 +189,9 @@ const formattedDistance = computed(() => {
 
   const candidates = []
   if (typeof feedbackDistance === 'number' && Number.isFinite(feedbackDistance)) {
-    candidates.push(feedbackDistance)
+    if (feedbackDistance > 0.001 || poseDistance === null || poseDistance <= 0.35) {
+      candidates.push(feedbackDistance)
+    }
   }
   if (typeof poseDistance === 'number' && Number.isFinite(poseDistance)) {
     candidates.push(poseDistance)

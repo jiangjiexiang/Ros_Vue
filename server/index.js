@@ -12,6 +12,8 @@ const STORE_COLLECTIONS = new Set(['robots', 'missions', 'records', 'alerts']);
 const MAX_TASK_LOG_LINES = 200;
 const app = express();
 const activeProcesses = new Map();
+const pendingTaskTimers = new Map();
+const pendingGroupTimers = new Map();
 const taskLogs = new Map();
 const simulationControlUrls = {
     indoor: process.env.SIMULATION_CONTROL_URL_INDOOR || process.env.SIMULATION_CONTROL_URL || 'http://127.0.0.1:8766',
@@ -391,13 +393,53 @@ function startTask(task, config, extraArgs = []) {
     });
 }
 
+function cancelPendingTask(id) {
+    const timer = pendingTaskTimers.get(id);
+    if (timer) {
+        clearTimeout(timer);
+        pendingTaskTimers.delete(id);
+    }
+}
+
+function cancelPendingGroup(groupKey) {
+    const timer = pendingGroupTimers.get(groupKey);
+    if (timer) {
+        clearTimeout(timer);
+        pendingGroupTimers.delete(groupKey);
+    }
+}
+
+function scheduleGroupTasks(groupKey, delayMs, tasks, config, extraArgs = []) {
+    cancelPendingGroup(groupKey);
+    const timer = setTimeout(() => {
+        pendingGroupTimers.delete(groupKey);
+        startTasks(tasks, config, extraArgs);
+    }, delayMs);
+    pendingGroupTimers.set(groupKey, timer);
+}
+
+function isTaskActiveOrPending(id) {
+    return activeProcesses.has(id) || pendingTaskTimers.has(id);
+}
+
 function startTasks(tasks, config, extraArgs = []) {
     tasks.forEach((task) => {
-        setTimeout(() => startTask(task, config, extraArgs), Number(task.delay) || 0);
+        cancelPendingTask(task.id);
+        const delay = Number(task.delay) || 0;
+        if (delay <= 0) {
+            startTask(task, config, extraArgs);
+            return;
+        }
+        const timer = setTimeout(() => {
+            pendingTaskTimers.delete(task.id);
+            startTask(task, config, extraArgs);
+        }, delay);
+        pendingTaskTimers.set(task.id, timer);
     });
 }
 
 function stopTask(id) {
+    cancelPendingTask(id);
     const proc = activeProcesses.get(id);
     if (!proc?.pid) return;
     try {
@@ -570,7 +612,10 @@ app.post('/api/stop_task/:taskName', (req, res) => {
     const config = loadConfig();
     stopTasks(config.tasks?.[req.params.taskName] || []);
     if (req.params.taskName.startsWith('simulation_')) {
-        stopTasks(resolveLocalizationTasks(config, req.params.taskName.replace('simulation_', '')));
+        const scene = req.params.taskName.replace('simulation_', '');
+        cancelPendingGroup(`localization:${scene}`);
+        cancelPendingGroup(`mapping:${scene}`);
+        stopTasks(resolveLocalizationTasks(config, scene));
     }
     res.json({ success: true });
 });
@@ -593,84 +638,105 @@ function resolveMappingTasks(config, scene) {
     return config.tasks?.mapping || [];
 }
 
-function resolveLocalizationTasks(config, scene, mapPath = '') {
-    const clean = typeof scene === 'string' ? scene.trim().replace(/^\/+|\/+$/g, '') : '';
-    if (!['indoor', 'warehouse', 'outdoor'].includes(clean)) return [];
-    const fastlio = resolveMappingTasks(config, clean).map((task) => ({
-        ...task,
-        id: task.id.replace('_fastlio', '_localization_fastlio'),
-        description: task.description.replace('建图', '定位')
-    }));
-    const localization = {
-        id: `simulation_${clean}_localization`,
-        description: `${clean} 保存地图全局定位`,
-        command: '/usr/bin/python3',
-        args: [
-            'simulation/fastlio_localization.py', '--ros-args',
-            '-r', `__node:=localization_${clean}`,
-            '-p', `map_file:=${mapPath}`,
-            '-p', `topic_namespace:=${clean}`
-        ],
-        env: { ROS_DOMAIN_ID: '88', FASTRTPS_DEFAULT_PROFILES_FILE: null },
-        delay: 500
-    };
-    const navigation = {
-        id: `simulation_${clean}_navigation`,
-        description: `${clean} 点击目标自动导航`,
-        command: '/usr/bin/python3',
-        args: [
-            'simulation/click_navigation.py', '--ros-args',
-            '-r', `__node:=navigation_${clean}`,
-            '-p', `map_file:=${mapPath}`,
-            '-p', `topic_namespace:=${clean}`
-        ],
-        env: { ROS_DOMAIN_ID: '88', FASTRTPS_DEFAULT_PROFILES_FILE: null },
-        delay: 800
-    };
-    return [...fastlio, localization, navigation];
+function nav2Installed(config) {
+    const candidates = [
+        '/opt/ros/humble/share/nav2_bt_navigator',
+        path.join(resolveFromProject(config.workspace || '..'), 'install', 'nav2_bt_navigator')
+    ];
+    return candidates.some((dir) => fs.existsSync(dir));
+}
+
+function resolveLocalizationTasks(config, scene, mapYamlPath = '') {
+    const clean = normalizeSceneKey(scene);
+    const paramsFile = path.join(projectRoot, 'config', 'nav2_params.yaml');
+    const launchFile = path.join(projectRoot, 'simulation', 'nav2_launch.py');
+    const isSim = ['indoor', 'warehouse', 'outdoor'].includes(clean);
+    const taskId = isSim ? `simulation_${clean}_nav2` : 'robot_nav2';
+    const args = [
+        'launch',
+        launchFile,
+        `map:=${mapYamlPath}`,
+        `params_file:=${paramsFile}`,
+        `auto_initial_pose:=${isSim ? 'true' : 'false'}`
+    ];
+    if (isSim) {
+        args.push(`namespace:=${clean}`);
+    }
+    const env = isSim
+        ? { ROS_DOMAIN_ID: '88', FASTRTPS_DEFAULT_PROFILES_FILE: null }
+        : { ROS_DOMAIN_ID: '88' };
+    return [{
+        id: taskId,
+        description: isSim ? `${clean} Nav2 2D 定位与巡检导航` : 'Nav2 2D 定位与巡检导航',
+        command: 'ros2',
+        args,
+        env,
+        delay: 0
+    }];
 }
 
 function localizationMapPath(config, value) {
     if (typeof value !== 'string' || !value.trim()) return null;
     const directory = path.resolve(mapsDir(config));
-    const selected = path.isAbsolute(value) ? path.normalize(value) : path.resolve(directory, value);
-    const withExtension = selected.endsWith('.pcd') ? selected : `${selected}.pcd`;
-    if (!withExtension.startsWith(`${directory}${path.sep}`) || !fs.existsSync(withExtension)) return null;
-    return withExtension;
+    const trimmed = value.trim().replace(/\.(yaml|yml|pgm|pcd)$/i, '');
+    const selected = path.isAbsolute(trimmed) ? path.normalize(trimmed) : path.resolve(directory, trimmed);
+    const yamlPath = `${selected}.yaml`;
+    const pgmPath = `${selected}.pgm`;
+    if (!yamlPath.startsWith(`${directory}${path.sep}`) || !fs.existsSync(yamlPath) || !fs.existsSync(pgmPath)) {
+        return null;
+    }
+    return yamlPath;
+}
+
+function normalizeSceneKey(scene) {
+    return typeof scene === 'string' ? scene.trim().replace(/^\/+|\/+$/g, '') : '';
 }
 
 app.post('/api/start_localization', (req, res) => {
     const config = loadConfig();
-    const scene = req.body?.scene || req.query?.scene || '';
+    const scene = normalizeSceneKey(req.body?.scene || req.query?.scene || '');
+    if (!nav2Installed(config)) {
+        return res.status(503).json({
+            success: false,
+            error: '未检测到 ROS 2 Nav2 功能包，请先执行: sudo apt update && sudo apt install -y ros-humble-navigation2 ros-humble-nav2-bringup'
+        });
+    }
     const mapPath = localizationMapPath(config, req.body?.mapPath);
-    if (!mapPath) return res.status(400).json({ success: false, error: '请选择地图目录中存在的 PCD 地图' });
+    if (!mapPath) return res.status(400).json({ success: false, error: '请选择地图目录中存在的 2D 地图（需包含 .yaml 与 .pgm）' });
     const tasks = resolveLocalizationTasks(config, scene, mapPath);
-    if (tasks.length < 2) return res.status(404).json({ success: false, error: '当前场景不支持独立定位' });
+    cancelPendingGroup(`mapping:${scene}`);
+    cancelPendingGroup(`localization:${scene}`);
     stopTasks(resolveMappingTasks(config, scene));
     stopTasks(tasks);
-    startTasks(tasks, config);
-    res.json({ success: true, mapPath });
+    scheduleGroupTasks(`localization:${scene}`, 1000, tasks, config);
+    res.json({ success: true, mapPath, engine: 'nav2' });
 });
 
 app.post('/api/stop_localization', (req, res) => {
     const config = loadConfig();
-    stopTasks(resolveLocalizationTasks(config, req.body?.scene || req.query?.scene));
+    const scene = normalizeSceneKey(req.body?.scene || req.query?.scene || '');
+    cancelPendingGroup(`localization:${scene}`);
+    stopTasks(resolveLocalizationTasks(config, scene));
     res.json({ success: true });
 });
 
 app.get('/api/localization_status', (req, res) => {
     const config = loadConfig();
-    const scene = req.query?.scene || '';
+    const scene = normalizeSceneKey(req.query?.scene || '');
     const tasks = resolveLocalizationTasks(config, scene);
-    const nodeId = `simulation_${scene}_localization`;
-    res.json({ isRunning: tasks.some((task) => task.id === nodeId && activeProcesses.has(nodeId)) });
+    const isPendingStart = pendingGroupTimers.has(`localization:${scene}`);
+    res.json({
+        isRunning: tasks.length > 0 && (isPendingStart || tasks.every((task) => isTaskActiveOrPending(task.id)))
+    });
 });
 
 app.post('/api/start_mapping', (req, res) => {
     const config = loadConfig();
-    const scene = req.body?.scene || req.query?.scene;
+    const scene = normalizeSceneKey(req.body?.scene || req.query?.scene || '');
     const tasks = resolveMappingTasks(config, scene);
     if (tasks.length === 0) return res.status(404).json({ success: false, error: '建图任务未定义或为空' });
+    cancelPendingGroup(`localization:${scene}`);
+    cancelPendingGroup(`mapping:${scene}`);
     stopTasks(resolveLocalizationTasks(config, scene));
     startTasks(tasks, config);
     res.json({ success: true });
@@ -678,25 +744,30 @@ app.post('/api/start_mapping', (req, res) => {
 
 app.post('/api/stop_mapping', (req, res) => {
     const config = loadConfig();
-    const tasks = resolveMappingTasks(config, req.body?.scene || req.query?.scene);
+    const scene = normalizeSceneKey(req.body?.scene || req.query?.scene || '');
+    cancelPendingGroup(`mapping:${scene}`);
+    const tasks = resolveMappingTasks(config, scene);
     stopTasks(tasks);
     res.json({ success: true });
 });
 
 app.post('/api/restart_mapping', (req, res) => {
     const config = loadConfig();
-    const tasks = resolveMappingTasks(config, req.body?.scene || req.query?.scene);
+    const scene = normalizeSceneKey(req.body?.scene || req.query?.scene || '');
+    const tasks = resolveMappingTasks(config, scene);
     if (tasks.length === 0) return res.status(404).json({ success: false, error: '建图任务未定义或为空' });
+    cancelPendingGroup(`localization:${scene}`);
+    cancelPendingGroup(`mapping:${scene}`);
     stopTasks(tasks);
-    setTimeout(() => {
-        startTasks(tasks, config);
-    }, 800);
+    scheduleGroupTasks(`mapping:${scene}`, 800, tasks, config);
     res.json({ success: true });
 });
 
 app.get('/api/mapping_status', (req, res) => {
-    const tasks = resolveMappingTasks(loadConfig(), req.query?.scene);
-    res.json({ isRunning: tasks.some((task) => activeProcesses.has(task.id)) });
+    const scene = normalizeSceneKey(req.query?.scene || '');
+    const tasks = resolveMappingTasks(loadConfig(), scene);
+    const isPendingStart = pendingGroupTimers.has(`mapping:${scene}`);
+    res.json({ isRunning: isPendingStart || tasks.some((task) => isTaskActiveOrPending(task.id)) });
 });
 app.post('/api/stop_navigation', (req, res) => res.redirect(307, '/api/stop_task/navigation'));
 app.get('/api/navigation_status', (req, res) => res.redirect(301, '/api/task_status/navigation'));
@@ -949,6 +1020,28 @@ app.post('/api/save_slam_map', (req, res) => {
     const width = Math.min(2000, Math.max(10, Math.ceil((maxX - minX) / resVal)));
     const height = Math.min(2000, Math.max(10, Math.ceil((maxY - minY) / resVal)));
     const grid = Buffer.alloc(width * height, 205); // 205 = unknown
+    const obstacleCounts = new Uint16Array(width * height);
+
+    // Auto-estimate floor height from dominant Z peak in [-1.0, 1.0] to avoid marking tilted/offset floor as obstacles
+    const zBins = new Uint32Array(40);
+    let lowZCount = 0;
+    for (let i = 0; i < count; i++) {
+        const z = points[i * 3 + 2];
+        if (!Number.isFinite(z) || z < -1.0 || z >= 1.0) continue;
+        const bin = Math.min(39, Math.max(0, Math.floor((z + 1.0) / 0.05)));
+        zBins[bin] += 1;
+        lowZCount += 1;
+    }
+    let floorZ = 0.0;
+    if (lowZCount >= 50) {
+        let bestBin = 0;
+        for (let b = 1; b < zBins.length; b++) {
+            if (zBins[b] > zBins[bestBin]) bestBin = b;
+        }
+        floorZ = -1.0 + (bestBin + 0.5) * 0.05;
+    }
+    const effMinObstacleZ = Math.max(Number(minObstacleZ) || 0.14, floorZ + 0.25);
+    const effMaxObstacleZ = Math.max(effMinObstacleZ + 0.5, floorZ + (Number(maxObstacleZ) || 2.0));
 
     for (let i = 0; i < count; i++) {
         const x = points[i * 3];
@@ -960,10 +1053,34 @@ app.post('/api/save_slam_map', (req, res) => {
         if (gx < 0 || gx >= width || gy < 0 || gy >= height) continue;
         const row = height - 1 - gy; // PGM top-down
         const idx = row * width + gx;
-        if (z >= minObstacleZ && z <= maxObstacleZ) {
-            grid[idx] = 0; // occupied
-        } else if (z < minObstacleZ && grid[idx] !== 0) {
+        if (z >= effMinObstacleZ && z <= effMaxObstacleZ) {
+            if (obstacleCounts[idx] < 65535) obstacleCounts[idx] += 1;
+        } else if (z >= floorZ - 0.2 && z < effMinObstacleZ - 0.05) {
             grid[idx] = 254; // free
+        }
+    }
+
+    for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+            const idx = row * width + col;
+            if (obstacleCounts[idx] === 0) continue;
+            let neighborhoodHits = obstacleCounts[idx];
+            if (neighborhoodHits < 2) {
+                for (let dr = -1; dr <= 1 && neighborhoodHits < 2; dr++) {
+                    const nr = row + dr;
+                    if (nr < 0 || nr >= height) continue;
+                    for (let dc = -1; dc <= 1; dc++) {
+                        if (dr === 0 && dc === 0) continue;
+                        const nc = col + dc;
+                        if (nc < 0 || nc >= width) continue;
+                        neighborhoodHits += obstacleCounts[nr * width + nc];
+                        if (neighborhoodHits >= 2) break;
+                    }
+                }
+            }
+            if (neighborhoodHits >= 2) {
+                grid[idx] = 0; // occupied
+            }
         }
     }
 
@@ -1045,6 +1162,10 @@ app.put('/api/:collection', (req, res, next) => {
 });
 
 function shutdown() {
+    pendingGroupTimers.forEach((timer) => clearTimeout(timer));
+    pendingGroupTimers.clear();
+    pendingTaskTimers.forEach((timer) => clearTimeout(timer));
+    pendingTaskTimers.clear();
     activeProcesses.forEach((proc, id) => stopTask(id));
     process.exit(0);
 }

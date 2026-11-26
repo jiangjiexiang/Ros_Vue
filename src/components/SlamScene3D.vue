@@ -58,8 +58,8 @@
         <div v-if="isSettingPose" class="scene3d-hint pose">
           在地面按住拖动箭头方向，松开后下发 3D 初始定位 (/initialpose)
         </div>
-        <div v-else-if="isNavigating || multiPointMode" class="scene3d-hint goal">
-          {{ multiPointMode ? '左键旋转 · 右键平移 · 双击地面连续添加 3D 航点' : '左键旋转 · 右键平移 · 双击地面设定 3D 导航目标' }}
+        <div v-else-if="isNavigating || isLocalizing || multiPointMode" class="scene3d-hint goal">
+          {{ multiPointMode ? '拖动旋转 · 单击地面连续添加 3D 航点' : '拖动旋转 · 单击地面设定 3D 导航目标' }}
         </div>
 
         <div class="scene3d-layer-bar">
@@ -98,6 +98,7 @@ const props = defineProps({
   globalMapData: { type: Object, default: null },
   layers: { type: Object, default: () => ({}) },
   isMapping: { type: Boolean, default: false },
+  isLocalizing: { type: Boolean, default: false },
   isNavigating: { type: Boolean, default: false },
   isSettingPose: { type: Boolean, default: false },
   multiPointMode: { type: Boolean, default: false },
@@ -178,8 +179,11 @@ const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
 const tfTree = Object.create(null)
 
 let poseDragStart = null
+let pointerDownPosition = null
+let lastGoalClickTime = 0
 let lastRobotPos = new THREE.Vector3()
 let hasRobotPos = false
+const singleGoal = ref(null)
 
 function composeTransform(a, b) {
   const pa = new THREE.Vector3(a.translation.x, a.translation.y, a.translation.z || 0)
@@ -439,6 +443,7 @@ function initThree() {
     new THREE.BufferGeometry(),
     new THREE.LineBasicMaterial({ color: 0x38bdf8 })
   )
+  trajLine.visible = false
   trajLine.frustumCulled = false
   scene.add(trajLine)
 
@@ -479,7 +484,7 @@ function syncLayerVisibility() {
   if (scanPoints) scanPoints.visible = localLayers.scan
   if (robotGroup) robotGroup.visible = localLayers.robot && hasRobotPos
   if (planLine) planLine.visible = localLayers.path
-  if (trajLine) trajLine.visible = localLayers.path
+  if (trajLine) trajLine.visible = false
   if (waypointGroup) waypointGroup.visible = localLayers.goal
 }
 
@@ -818,22 +823,6 @@ function updateRobotPoseFromTfOrOdom() {
   lastRobotPos.copy(nextPos)
   hasRobotPos = true
   robotGroup.visible = localLayers.robot
-
-  // Append to live SLAM trajectory trail if FAST-LIO path isn't active
-  if (trajLine && !props.fastlioPathData?.poses?.length && !props.localizationPathData?.poses?.length) {
-    const lastIdx = (trailCount - 1) * 3
-    const dist = trailCount === 0
-      ? 1
-      : Math.hypot(nextPos.x - trailPositions[lastIdx], nextPos.y - trailPositions[lastIdx + 1])
-    if (dist > 0.08 && trailCount < MAX_TRAIL_POINTS) {
-      const idx = trailCount * 3
-      trailPositions[idx] = nextPos.x
-      trailPositions[idx + 1] = nextPos.y
-      trailPositions[idx + 2] = nextPos.z + 0.05
-      trailCount += 1
-      trajLine.geometry.setAttribute('position', new THREE.BufferAttribute(trailPositions.subarray(0, trailCount * 3), 3))
-    }
-  }
 }
 
 function updatePathLine(lineObj, pathMsg, zLift) {
@@ -876,10 +865,13 @@ function rebuildWaypoints() {
 
   const all = [...(props.waypoints || [])]
   if (props.activeWaypoint) all.unshift(props.activeWaypoint)
+  if (!props.multiPointMode && all.length === 0 && singleGoal.value) {
+    all.push(singleGoal.value)
+  }
 
   for (let i = 0; i < all.length; i++) {
     const wp = all[i]
-    const isActive = i === 0 && props.activeWaypoint
+    const isActive = (i === 0 && props.activeWaypoint) || (!props.multiPointMode && singleGoal.value)
     const color = isActive ? 0x34d399 : 0xfbbf24
 
     const ring = new THREE.Mesh(
@@ -912,6 +904,11 @@ function pickGroundPoint(event) {
 }
 
 function onStagePointerDown(event) {
+  if (event.target !== renderer?.domElement) {
+    pointerDownPosition = null
+    return
+  }
+  pointerDownPosition = { x: event.clientX, y: event.clientY, button: event.button }
   if (!props.isSettingPose || event.button !== 0) return
   const pt = pickGroundPoint(event)
   if (!pt) return
@@ -934,24 +931,40 @@ function onStagePointerMove(event) {
 }
 
 function onStagePointerUp(event) {
-  if (!props.isSettingPose || !poseDragStart) return
-  const pt = pickGroundPoint(event) || poseDragStart
-  const dx = pt.x - poseDragStart.x
-  const dy = pt.y - poseDragStart.y
-  const yaw = Math.hypot(dx, dy) > 0.05 ? Math.atan2(dy, dx) : 0
-  emit('initial-pose-set', { x: poseDragStart.x, y: poseDragStart.y, yaw })
-  poseDragStart = null
-  poseArrow.visible = false
-  if (controls) controls.enabled = true
+  const down = pointerDownPosition
+  pointerDownPosition = null
+  if (props.isSettingPose && poseDragStart) {
+    const pt = pickGroundPoint(event) || poseDragStart
+    const dx = pt.x - poseDragStart.x
+    const dy = pt.y - poseDragStart.y
+    const yaw = Math.hypot(dx, dy) > 0.05 ? Math.atan2(dy, dx) : 0
+    emit('initial-pose-set', { x: poseDragStart.x, y: poseDragStart.y, yaw })
+    poseDragStart = null
+    poseArrow.visible = false
+    if (controls) controls.enabled = true
+    return
+  }
+  if (!down || down.button !== 0 || event.target !== renderer?.domElement) return
+  if (Math.hypot(event.clientX - down.x, event.clientY - down.y) <= 8) {
+    onStageDblClick(event)
+  }
 }
 
 function onStageDblClick(event) {
   if (!props.connected || props.isSettingPose) return
+  if (!props.isNavigating && !props.isLocalizing && !props.multiPointMode) return
+  if (event.target !== renderer?.domElement) return
+  const now = performance.now()
+  if (now - lastGoalClickTime < 300) return
+  lastGoalClickTime = now
   const pt = pickGroundPoint(event)
   if (!pt) return
   if (props.multiPointMode) {
+    singleGoal.value = null
     emit('waypoint-add', { x: pt.x, y: pt.y })
   } else {
+    singleGoal.value = { x: pt.x, y: pt.y }
+    rebuildWaypoints()
     emit('goal-set', { x: pt.x, y: pt.y })
   }
 }
@@ -1015,13 +1028,15 @@ watch(() => props.scanData, updateLaserScan)
 watch(() => props.pointCloudData, (msg) => updatePointCloudMesh(liveCloudPoints, msg, true))
 watch(() => props.registeredCloudData, (msg) => updatePointCloudMesh(regCloudPoints, msg, false))
 watch(() => props.planData, (msg) => updatePathLine(planLine, msg, 0.06))
-watch(() => props.fastlioPathData, (msg) => {
-  if (!props.localizationPathData?.poses?.length) updatePathLine(trajLine, msg, 0.04)
-})
 watch(() => props.localizationData, updateRobotPoseFromTfOrOdom)
-watch(() => props.localizationPathData, (msg) => updatePathLine(trajLine, msg, 0.04))
 watch(() => props.globalMapData, updateGlobalMap)
-watch([() => props.waypoints, () => props.activeWaypoint], rebuildWaypoints, { deep: true })
+watch([() => props.waypoints, () => props.activeWaypoint, () => props.multiPointMode], rebuildWaypoints, { deep: true })
+watch(() => props.isNavigating, (nav) => {
+  if (!nav) {
+    singleGoal.value = null
+    rebuildWaypoints()
+  }
+})
 watch(localLayers, syncLayerVisibility, { deep: true })
 
 function exportGlobalMapPoints() {

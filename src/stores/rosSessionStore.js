@@ -31,7 +31,13 @@ const multiPointMode = ref(false)
 const waypointQueue = ref([])
 const activeWaypoint = ref(null)
 const waypointAdvancing = ref(false)
-const FEEDBACK_REACHED_THRESHOLD = 0.10
+let waypointDispatchedAt = 0
+let waypointGoalSeenActive = false
+let waypointInitialStatusGoalId = ''
+let waypointRetryCount = 0
+const FEEDBACK_REACHED_THRESHOLD = 0.22
+const POSE_REACHED_THRESHOLD = 0.24
+const SETTLED_REACHED_THRESHOLD = 0.40
 
 const topics = ref([])
 const batteryPercentage = ref(-1)
@@ -43,6 +49,7 @@ const odomData = ref(null)
 const planData = ref(null)
 const cameraPrimary = ref(null)
 const navFeedback = ref(null)
+const navStatus = ref(null)
 const imuData = ref(null)
 const pointCloudData = ref(null)
 const registeredCloudData = ref(null)
@@ -68,6 +75,7 @@ const keyboardState = reactive({
 })
 
 let cmdVelChannelId = null
+let manualCmdVelChannelId = null
 let goalPoseChannelId = null
 let initialPoseChannelId = null
 
@@ -78,6 +86,7 @@ let tfSubId = null
 let odomSubId = null
 let planSubId = null
 let feedbackSubId = null
+let statusSubId = null
 let imuSubId = null
 let cameraPrimarySubId = null
 let pointCloudSubId = null
@@ -171,6 +180,7 @@ function clearAllData() {
   planData.value = null
   cameraPrimary.value = null
   navFeedback.value = null
+  navStatus.value = null
   imuData.value = null
   pointCloudData.value = null
   registeredCloudData.value = null
@@ -185,6 +195,7 @@ function clearAllData() {
 
 function clearConnectionState() {
   cmdVelChannelId = null
+  manualCmdVelChannelId = null
   goalPoseChannelId = null
   initialPoseChannelId = null
   batterySubId = null
@@ -194,6 +205,7 @@ function clearConnectionState() {
   odomSubId = null
   planSubId = null
   feedbackSubId = null
+  statusSubId = null
   imuSubId = null
   cameraPrimarySubId = null
   pointCloudSubId = null
@@ -274,12 +286,40 @@ function normalizeNavFeedback(data) {
   return null
 }
 
+function normalizeNavStatus(data) {
+  if (!data || typeof data !== 'object') return null
+  if (data.latest && typeof data.latest === 'object') {
+    return {
+      goal_id: String(data.latest.goal_id || ''),
+      status: Number(data.latest.status)
+    }
+  }
+  const list = Array.isArray(data.status_list) ? data.status_list : []
+  if (list.length === 0) return null
+  const last = list[list.length - 1]
+  const rawUuid = last?.goal_info?.goal_id?.uuid
+  let goalId = ''
+  if (typeof last?.goal_id === 'string') {
+    goalId = last.goal_id
+  } else if (Array.isArray(rawUuid) || rawUuid instanceof Uint8Array) {
+    goalId = Array.from(rawUuid).map((b) => Number(b).toString(16).padStart(2, '0')).join('')
+  }
+  return {
+    goal_id: goalId,
+    status: Number(last?.status)
+  }
+}
+
 function onChannelsReady(event) {
   const channels = event.detail
   topics.value = channels
 
   if (!cmdVelChannelId) {
     cmdVelChannelId = transport.clientAdvertise(robotTopics.value.cmd_vel, 'geometry_msgs/Twist', 'json')
+  }
+
+  if (!manualCmdVelChannelId) {
+    manualCmdVelChannelId = transport.clientAdvertise(robotTopics.value.manual_cmd_vel, 'geometry_msgs/Twist', 'json')
   }
 
   if (!batterySubId) {
@@ -340,6 +380,12 @@ function onChannelsReady(event) {
     })
   }
 
+  if (!statusSubId && robotTopics.value.navigate_status) {
+    statusSubId = transport.subscribe(robotTopics.value.navigate_status, (data) => {
+      navStatus.value = normalizeNavStatus(data)
+    })
+  }
+
   if (!imuSubId) {
     imuSubId = transport.subscribe(robotTopics.value.imu, (data) => {
       imuData.value = data
@@ -389,10 +435,14 @@ function onChannelsReady(event) {
   }
 }
 
+function publishVelocity(linearX, angularZ) {
+  if (!isConnected.value) return
+  if (cmdVelChannelId) transport.sendTwist(cmdVelChannelId, linearX, angularZ)
+  if (manualCmdVelChannelId) transport.sendTwist(manualCmdVelChannelId, linearX, angularZ)
+}
+
 function onVelocityChange({ linearX, angularZ }) {
-  if (cmdVelChannelId && isConnected.value) {
-    transport.sendTwist(cmdVelChannelId, linearX, angularZ)
-  }
+  publishVelocity(linearX, angularZ)
 }
 
 function sendGoalPose(x, y, yaw = 0) {
@@ -407,30 +457,39 @@ function onGoalSet({ x, y }) {
 }
 
 function dispatchNextWaypoint() {
-  if (!multiPointMode.value || !navigationActive.value) return
+  if (!multiPointMode.value || !(navigationActive.value || localizationActive.value)) return
   if (waypointQueue.value.length === 0) {
     activeWaypoint.value = null
+    waypointGoalSeenActive = false
+    waypointInitialStatusGoalId = ''
+    waypointRetryCount = 0
     return
   }
   const next = waypointQueue.value.shift()
   activeWaypoint.value = next
+  waypointDispatchedAt = Date.now()
+  waypointGoalSeenActive = false
+  waypointInitialStatusGoalId = navStatus.value?.goal_id || ''
+  waypointRetryCount = 0
+  navFeedback.value = null
   sendGoalPose(next.x, next.y, 0)
 }
 
 function advanceWaypoint() {
   if (!multiPointMode.value || !activeWaypoint.value) return
   if (waypointAdvancing.value) return
+  if (Date.now() - waypointDispatchedAt < 900) return
   waypointAdvancing.value = true
   setTimeout(() => {
     dispatchNextWaypoint()
     waypointAdvancing.value = false
-  }, 200)
+  }, 400)
 }
 
 function onWaypointAdd({ x, y }) {
   if (!multiPointMode.value) return
   waypointQueue.value.push({ x, y })
-  if (navigationActive.value && !activeWaypoint.value) {
+  if ((navigationActive.value || localizationActive.value) && !activeWaypoint.value) {
     dispatchNextWaypoint()
   }
 }
@@ -443,6 +502,8 @@ function clearWaypoints() {
   waypointQueue.value = []
   activeWaypoint.value = null
   waypointAdvancing.value = false
+  waypointGoalSeenActive = false
+  waypointInitialStatusGoalId = ''
 }
 
 function onInitialPoseSet({ x, y, yaw }) {
@@ -461,9 +522,7 @@ function onStopMotion() {
     clearInterval(keyboardInterval)
     keyboardInterval = null
   }
-  if (cmdVelChannelId && isConnected.value) {
-    transport.sendTwist(cmdVelChannelId, 0, 0)
-  }
+  publishVelocity(0, 0)
 }
 
 async function emergencyStop() {
@@ -482,10 +541,19 @@ async function emergencyStop() {
   showToast('已触发急停，已下发零速度指令', 'warning')
 }
 
+function isKeyboardDriving() {
+  return keyboardState.w || keyboardState.a || keyboardState.s || keyboardState.d || keyboardInterval !== null
+}
+
+function stopKeyboardMotion() {
+  if (!isKeyboardDriving()) return
+  onStopMotion()
+}
+
 function setKeyboardEnabled(enabled) {
   keyboardEnabled.value = Boolean(enabled)
   if (!keyboardEnabled.value) {
-    onStopMotion()
+    stopKeyboardMotion()
   }
 }
 
@@ -500,7 +568,7 @@ function updateKeyboardControl() {
   if (keyboardState.a) angularZ += controlConfig.value.max_angular_speed
   if (keyboardState.d) angularZ -= controlConfig.value.max_angular_speed
 
-  transport.sendTwist(cmdVelChannelId, linearX, angularZ)
+  publishVelocity(linearX, angularZ)
 }
 
 function handleKeyDown(e) {
@@ -534,6 +602,12 @@ function handleKeyUp(e) {
 
 watch(multiPointMode, (enabled) => {
   if (!enabled) clearWaypoints()
+})
+
+watch([navigationActive, localizationActive], ([nav, loc]) => {
+  if ((nav || loc) && multiPointMode.value && !activeWaypoint.value && waypointQueue.value.length > 0) {
+    dispatchNextWaypoint()
+  }
 })
 
 watch(connectionState, (current, previous) => {
@@ -577,8 +651,59 @@ watch(batteryPercentage, (current, previous) => {
 
 watch(() => navFeedback.value?.distance_remaining, (distance) => {
   if (!multiPointMode.value || !activeWaypoint.value) return
-  if (typeof distance !== 'number' || !Number.isFinite(distance)) return
+  if (typeof distance !== 'number' || !Number.isFinite(distance) || distance <= 0.001) return
+  if (navStatus.value?.status === 2) return
   if (distance <= FEEDBACK_REACHED_THRESHOLD) {
+    advanceWaypoint()
+  }
+})
+
+watch(navStatus, (st) => {
+  if (!multiPointMode.value || !(navigationActive.value || localizationActive.value) || !activeWaypoint.value) return
+  if (!st || !Number.isFinite(st.status)) return
+  const isNewGoal = Boolean(st.goal_id) && st.goal_id !== waypointInitialStatusGoalId
+  if ((st.status === 1 || st.status === 2) && (isNewGoal || Date.now() - waypointDispatchedAt >= 200)) {
+    waypointGoalSeenActive = true
+    return
+  }
+  if (!waypointGoalSeenActive && !isNewGoal) return
+  const elapsed = Date.now() - waypointDispatchedAt
+  if (st.status === 4) {
+    // SUCCEEDED: check if robot is actually near activeWaypoint (guard against premature preemption success)
+    const pos = localizationData.value?.pose?.pose?.position || odomData.value?.pose?.pose?.position
+    const dist = pos ? Math.hypot(pos.x - activeWaypoint.value.x, pos.y - activeWaypoint.value.y) : 0
+    if (dist > 0.55 && waypointRetryCount < 2) {
+      waypointRetryCount += 1
+      waypointDispatchedAt = Date.now()
+      waypointGoalSeenActive = false
+      waypointInitialStatusGoalId = st.goal_id || ''
+      setTimeout(() => {
+        if (multiPointMode.value && activeWaypoint.value) {
+          sendGoalPose(activeWaypoint.value.x, activeWaypoint.value.y, 0)
+        }
+      }, 300)
+      return
+    }
+    if (elapsed >= 400) {
+      advanceWaypoint()
+    }
+  } else if (st.status === 6 && elapsed >= 1000) {
+    // ABORTED
+    showToast('当前航点路径受阻，已自动切换至下一航点', 'warning')
+    advanceWaypoint()
+  }
+})
+
+watch([localizationData, odomData], () => {
+  if (!multiPointMode.value || !(navigationActive.value || localizationActive.value) || !activeWaypoint.value) return
+  if (Date.now() - waypointDispatchedAt < 1500) return
+  // Wait for Nav2 to finish active execution so we never preempt mid-arrival
+  if (navStatus.value?.status === 1 || navStatus.value?.status === 2) return
+  const pos = localizationData.value?.pose?.pose?.position || odomData.value?.pose?.pose?.position
+  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return
+  const dist = Math.hypot(pos.x - activeWaypoint.value.x, pos.y - activeWaypoint.value.y)
+  const spd = Math.abs(odomData.value?.twist?.twist?.linear?.x || 0)
+  if (dist <= POSE_REACHED_THRESHOLD || (dist <= SETTLED_REACHED_THRESHOLD && spd < 0.05)) {
     advanceWaypoint()
   }
 })
@@ -590,7 +715,7 @@ function initRosSession() {
   window.addEventListener('foxglove:channels_update', onChannelsReady)
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('keyup', handleKeyUp)
-  window.addEventListener('blur', onStopMotion)
+  window.addEventListener('blur', stopKeyboardMotion)
   handleConnect()
 }
 
@@ -601,7 +726,7 @@ function disposeRosSession() {
   window.removeEventListener('foxglove:channels_update', onChannelsReady)
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('keyup', handleKeyUp)
-  window.removeEventListener('blur', onStopMotion)
+  window.removeEventListener('blur', stopKeyboardMotion)
   handleDisconnect()
 }
 
@@ -631,6 +756,7 @@ export function useRosSessionStore() {
     planData,
     cameraPrimary,
     navFeedback,
+    navStatus,
     imuData,
     pointCloudData,
     registeredCloudData,

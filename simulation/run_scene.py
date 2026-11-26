@@ -37,6 +37,7 @@ parser.add_argument("--scene", choices=("indoor", "warehouse", "outdoor"), defau
 parser.add_argument("--test-steps", type=int, default=0, help="运行指定物理步数后自动退出；0 表示持续运行")
 parser.add_argument("--control-port", type=int, default=8766, help="本机网页控制桥接端口")
 parser.add_argument("--render-interval", type=int, default=4, help="GUI 每隔多少个物理步渲染一次")
+parser.add_argument("--overview-camera", action="store_true", help="启用 1280x720 第三人称跟随视角相机 (/camera/overview)")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
@@ -64,24 +65,40 @@ from isaaclab.sensors.ray_caster import MultiMeshRayCaster, MultiMeshRayCasterCf
 from isaaclab.utils.math import quat_apply_inverse
 from isaaclab_assets.robots.unitree import UNITREE_GO2_CFG
 
+try:
+    from simulation.scene_assets import (
+        build_realistic_indoor,
+        build_realistic_outdoor,
+        build_realistic_warehouse,
+    )
+except ImportError:
+    from scene_assets import (
+        build_realistic_indoor,
+        build_realistic_outdoor,
+        build_realistic_warehouse,
+    )
+
 SCENES = {
     "indoor": {
-        "name": "室内巡检",
-        "spawn": (-3.5, -2.5, 0.42),
+        "name": "室内配电与机房巡检",
+        "spawn": (-3.3, -2.2, 0.42),
+        "bounds": (12.0, 10.0),
         "camera": ([9.5, -11.5, 10.0], [0.0, 0.0, 0.0]),
-        "targets": [(-3.5, 1.5), (0.0, 2.8), (3.8, 2.8), (3.8, -2.8)],
+        "targets": [(-3.4, -1.8), (-2.1, -1.2), (1.8, -0.9), (4.5, -2.2)],
     },
     "warehouse": {
-        "name": "仓库障碍",
-        "spawn": (-5.5, -4.5, 0.42),
+        "name": "工业仓储物流巡检",
+        "spawn": (-5.5, -0.9, 0.42),
+        "bounds": (16.0, 13.0),
         "camera": ([11.0, -13.0, 12.0], [0.0, 0.0, 0.0]),
-        "targets": [(-5.5, 0.0), (-1.8, 3.8), (2.0, 0.0), (5.5, 4.0)],
+        "targets": [(-5.2, -0.9), (-1.8, -0.9), (2.2, -0.9), (5.5, 4.2)],
     },
     "outdoor": {
-        "name": "户外坡道",
-        "spawn": (-5.0, -4.0, 0.42),
+        "name": "户外变电站巡检",
+        "spawn": (-5.0, -3.4, 0.42),
+        "bounds": (17.0, 14.0),
         "camera": ([11.0, -13.0, 11.0], [0.0, 0.0, 0.5]),
-        "targets": [(-4.0, 0.0), (-1.0, 2.5), (3.0, 2.5), (5.0, -3.0)],
+        "targets": [(-4.2, -0.4), (-1.2, 2.2), (3.2, -0.5), (5.2, -4.2)],
     },
 }
 
@@ -125,9 +142,12 @@ POINTCLOUD_METADATA = {
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 360
+OVERVIEW_WIDTH = 1280
+OVERVIEW_HEIGHT = 720
 CAMERA_UPDATE_PERIOD = 1.0 / 30.0
 CAMERA_FRAME_IDS = {
     "primary": "camera_primary_optical_frame",
+    "overview": "camera_overview_frame",
 }
 
 
@@ -240,8 +260,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(jpeg)))
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Frame-Id", CAMERA_FRAME_IDS[name])
-            self.send_header("X-Image-Width", str(CAMERA_WIDTH))
-            self.send_header("X-Image-Height", str(CAMERA_HEIGHT))
+            w = OVERVIEW_WIDTH if name == "overview" else CAMERA_WIDTH
+            h = OVERVIEW_HEIGHT if name == "overview" else CAMERA_HEIGHT
+            self.send_header("X-Image-Width", str(w))
+            self.send_header("X-Image-Height", str(h))
             self.end_headers()
             self.wfile.write(jpeg)
             return
@@ -378,25 +400,27 @@ def build_outdoor():
         box(f"SafetyBlock_{index}", (x, y, 0.25), (1.2, 0.35, 0.5), COLORS["warning"])
 
 
-def design_scene(scene_name):
+def design_scene(scene_name, sim):
     ground = sim_utils.GroundPlaneCfg(
         physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=1.0, dynamic_friction=0.9)
     )
     ground.func("/World/Ground", ground)
-    light = sim_utils.DistantLightCfg(intensity=2800.0, color=(0.82, 0.88, 1.0))
-    light.func("/World/Sun", light, translation=(2.0, -3.0, 8.0))
-    fill = sim_utils.DomeLightCfg(intensity=900.0, color=(0.72, 0.80, 0.90))
-    fill.func("/World/Sky", fill)
 
-    if scene_name == "indoor":
-        build_indoor()
-    elif scene_name == "warehouse":
-        build_warehouse()
+    if scene_name == "outdoor":
+        light = sim_utils.DistantLightCfg(intensity=3200.0, color=(1.0, 0.96, 0.88))
+        light.func("/World/Sun", light, translation=(6.0, -8.0, 14.0))
+        fill = sim_utils.DomeLightCfg(intensity=1350.0, color=(0.76, 0.87, 1.0))
+        fill.func("/World/Sky", fill)
+        build_realistic_outdoor(sim.stage)
     else:
-        build_outdoor()
-
-    for index, position in enumerate(SCENES[scene_name]["targets"]):
-        marker(index, position)
+        light = sim_utils.DistantLightCfg(intensity=1400.0, color=(0.94, 0.96, 1.0))
+        light.func("/World/Sun", light, translation=(3.0, -4.0, 9.0))
+        fill = sim_utils.DomeLightCfg(intensity=850.0, color=(0.86, 0.90, 0.96))
+        fill.func("/World/Sky", fill)
+        if scene_name == "indoor":
+            build_realistic_indoor(sim.stage)
+        else:
+            build_realistic_warehouse(sim.stage)
 
     robot_cfg = UNITREE_GO2_CFG.replace(prim_path="/World/Go2")
     robot_cfg.init_state.pos = SCENES[scene_name]["spawn"]
@@ -482,7 +506,7 @@ def create_lidar():
         update_period=0.01,
         offset=MultiMeshRayCasterCfg.OffsetCfg(pos=(0.15, 0.0, 0.20)),
         mesh_prim_paths=["/World/Environment"],
-        ray_alignment="yaw",
+        ray_alignment="base",
         pattern_cfg=patterns.LidarPatternCfg(
             channels=1,
             vertical_fov_range=(0.0, 0.0),
@@ -542,7 +566,7 @@ def pointcloud_points(lidar):
     ]
 
 
-def create_cameras():
+def create_cameras(enable_overview=False):
     spawn = sim_utils.PinholeCameraCfg(
         focal_length=16.0, focus_distance=20.0, clipping_range=(0.05, 100.0)
     )
@@ -557,13 +581,29 @@ def create_cameras():
             height=CAMERA_HEIGHT,
         )
     )
-    return {"primary": primary}
+    cams = {"primary": primary}
+    if enable_overview:
+        overview_spawn = sim_utils.PinholeCameraCfg(
+            focal_length=20.0, focus_distance=20.0, clipping_range=(0.1, 120.0)
+        )
+        cams["overview"] = Camera(
+            CameraCfg(
+                prim_path="/World/OverviewCamera",
+                update_period=CAMERA_UPDATE_PERIOD,
+                offset=CameraCfg.OffsetCfg(pos=(-2.0, -2.0, 2.0), rot=(1.0, 0.0, 0.0, 0.0), convention="world"),
+                spawn=overview_spawn,
+                data_types=["rgb"],
+                width=OVERVIEW_WIDTH,
+                height=OVERVIEW_HEIGHT,
+            )
+        )
+    return cams
 
 
-def encode_camera(camera):
+def encode_camera(camera, quality=80):
     rgb = camera.data.output["rgb"][0].detach().cpu().numpy()
     buffer = BytesIO()
-    Image.fromarray(rgb).save(buffer, format="JPEG", quality=80)
+    Image.fromarray(rgb).save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()
 
 
@@ -582,16 +622,17 @@ def main():
         ),
     ))
     sim.set_camera_view(eye=scene["camera"][0], target=scene["camera"][1])
-    robot = design_scene(args_cli.scene)
+    robot = design_scene(args_cli.scene, sim)
     lidar = create_lidar()
     pointcloud_lidar = create_pointcloud_lidar()
-    cameras = create_cameras()
+    cameras = create_cameras(enable_overview=args_cli.overview_camera)
     sim.reset()
     lidar.reset()
     pointcloud_lidar.reset()
     for camera in cameras.values():
         camera.reset()
     reset_robot(robot)
+    overview_eye_smooth = None
     control_state = ControlState(CONTROL_CONFIG["command_timeout_ms"])
     locomotion_policy = load_locomotion_policy(sim.device)
     control_server = ThreadingHTTPServer(("127.0.0.1", args_cli.control_port), ControlHandler)
@@ -630,9 +671,31 @@ def main():
             control_state.update_pointcloud(pointcloud_points(pointcloud_lidar))
         if camera_update_due:
             next_camera_update_time += CAMERA_UPDATE_PERIOD
+            if "overview" in cameras:
+                rpos = robot.data.root_pos_w[0]
+                px, py, pz = float(rpos[0].item()), float(rpos[1].item()), float(rpos[2].item())
+                bw, bd = scene.get("bounds", (12.0, 10.0))
+                # Keep overview camera smoothly inside hall bounds with a wide view of robot + industrial equipment
+                ox = 2.35 if px < -bw * 0.15 else -2.35
+                oy = -2.15 if py > -bd * 0.15 else 2.15
+                ex = max(-bw * 0.5 + 0.75, min(bw * 0.5 - 0.75, px + ox))
+                ey = max(-bd * 0.5 + 0.75, min(bd * 0.5 - 0.75, py + oy))
+                # In indoor west room, keep camera on the same side of the x=-1.2 divider wall as the robot!
+                if args_cli.scene == "indoor" and px < -1.35 and ex > -1.65:
+                    ex = -1.65
+                desired_eye = (ex, ey, max(1.75, pz + 1.48))
+                if overview_eye_smooth is None:
+                    overview_eye_smooth = desired_eye
+                else:
+                    overview_eye_smooth = tuple(
+                        overview_eye_smooth[i] * 0.88 + desired_eye[i] * 0.12 for i in range(3)
+                    )
+                eyes = torch.tensor([list(overview_eye_smooth)], dtype=torch.float32, device=sim.device)
+                targets = torch.tensor([[px, py, pz + 0.30]], dtype=torch.float32, device=sim.device)
+                cameras["overview"].set_world_poses_from_view(eyes, targets)
             for name, camera in cameras.items():
                 camera.update(dt=CAMERA_UPDATE_PERIOD, force_recompute=True)
-                control_state.update_camera(name, encode_camera(camera))
+                control_state.update_camera(name, encode_camera(camera, quality=88 if name == "overview" else 80))
 
         if args_cli.test_steps and steps >= args_cli.test_steps:
             if not torch.isfinite(robot.data.root_state_w).all().item():

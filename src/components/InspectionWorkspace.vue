@@ -77,6 +77,7 @@
         :globalMapData="globalMapData"
         :layers="mapLayers"
         :isMapping="isMapping"
+        :isLocalizing="isLocalizing"
         :isNavigating="isNavigating"
         :isSettingPose="isSettingPose"
         :multiPointMode="multiPointMode"
@@ -354,18 +355,6 @@ const linearSpeed = computed(() => {
   return Number.isFinite(speed) ? Math.abs(speed).toFixed(2) : '0.00'
 })
 const enabledLayerCount = computed(() => Object.values(props.mapLayers).filter(Boolean).length)
-const algorithmLabel = computed(() => {
-  const config = props.robotConfig || {}
-  const lidar = config.lidarType === '3d' ? '3D 雷达' : '2D 雷达'
-  const algorithm = {
-    slam_toolbox: 'SLAM Toolbox',
-    cartographer: 'Cartographer',
-    fast_lio: 'FAST-LIO',
-    fast_lio_localization: 'FAST-LIO Localization',
-    custom: config.algorithmPackage || '自定义算法'
-  }[config.slamAlgorithm || 'slam_toolbox'] || config.slamAlgorithm
-  return `${lidar} · ${algorithm}`
-})
 const interactionHint = computed(() => {
   if (!props.connected) return '连接机器人后可操作地图'
   if (props.isSettingPose) return '按住地图拖动，设置初始位置与朝向'
@@ -514,7 +503,7 @@ const interactionHint = computed(() => {
 }
 .right-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 8px;
   border-bottom: 1px solid var(--border-color);
@@ -525,8 +514,10 @@ const interactionHint = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
   height: 34px;
+  padding: 0 4px;
   border: 1px solid transparent;
   border-radius: 7px;
   color: var(--text-secondary);
